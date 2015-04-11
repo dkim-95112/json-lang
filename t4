@@ -1,0 +1,14 @@
+{
+  t: 0,
+  myloop:[
+    sys.p({
+      fmt : "%i\n",
+      arg1 : t
+   }),
+    t.incr().test({
+      cmp : 3,
+      eq : break()
+    })
+ ]
+}.loop("myloop", {foo:"bar"})
+

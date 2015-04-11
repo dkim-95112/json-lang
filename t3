@@ -1,0 +1,6 @@
+{
+  mytermios: sys.open({
+    path: "/dev/fd/0",
+    oflag: 2
+  })
+}.mytermios()

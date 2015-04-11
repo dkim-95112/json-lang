@@ -1,0 +1,3 @@
+{
+ hi: p(_arg)
+}.hi({fmt:"hello world\n"})
