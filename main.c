@@ -48,47 +48,82 @@ char *gettok ( char *buf , char delim ){
   } // while
   return pc;
 } // gettok
+#define FLOOP 0x1
 struct tv {
   struct tv *tok ; // todo: testing
   enum {
-    NUM,STR,NAM,KV,UNDEF,NUL,
-    STRS,VS,KVS // STACKS
+    NUM,STR,NAM,KVAL,
+    STRS,VS,KS // STACKS
   } t ;
   union {
     char *str ; // STR
     long num ; // NUM
-    struct tkv {char *key; struct tv *val;} *kv; // KV
+    struct tkv {char *key; struct tv *val;} kv; // KVAL
     struct tstrs {int top; size_t sz; char **buf;} s; // STRS
     struct tvs {int top; size_t sz; struct tv **buf;} v; // VS
-    struct tkvs {int top; size_t sz; struct tkv **buf;} k; // KVS
+    struct tks {int top; size_t sz; struct tkv **buf;} k; // KS
   } u ;
 }; // tv
-void evl( const struct tv *, struct tv *, struct tv ** );
+void evl( const struct tv *, struct tv *, struct tv * , struct tv ** );
 
 struct tv *var( int t ){
   struct tv *v = xcalloc( 1 , sizeof(struct tv) );
-  switch( v->t = t){
+  switch( v->t = t ){
   case STR:
   case NAM:
   case NUM:
-  case KV:
-  case UNDEF:
-  case NUL:
+  case KVAL:
     break;
   case STRS: v->u.s.top = -1 ; break;
   case VS: v->u.v.top = -1 ; break;
-  case KVS: v->u.k.top = -1 ; break;
-  default: xerr("var: unknown typ"); break;
+  case KS: v->u.k.top = -1 ; break;
+  default: xerr("var: unexp typ"); break;
   } // switch
   return v;
 } // var
-struct tkv *kvar( char *key , struct tv *val ){
-  struct tkv *kv = xmalloc( sizeof(struct tkv) );
-  kv->key = key; kv->val = val; return kv;
+struct tv *vdup( const struct tv *v ){
+  struct tv *rt = var( v->t );
+  switch( rt->t ){
+  case STR:
+  case NAM:
+  case NUM:
+  case KVAL:
+    break;
+  case STRS:
+    break;
+  case VS:
+    break;
+  case KS:
+    break;
+  default:
+    xerr("vdup: unexp typ");
+  } // switch
+  return rt;
+} // vdup
+struct tv *vstr( const char *s ){
+  struct tv *rt = var( STR );
+  rt->u.str = strdup( s );
+  return rt;
+} // vstr
+struct tkv *kvar( const char *key , struct tv *val ){
+  struct tkv *kv = xmalloc( sizeof( struct tkv ) );
+  kv->key = strdup( key );
+  kv->val = vdup( val );
+  return kv;
 } // kvar
+struct tv *vkvar( const char *key , struct tv *val ){
+  struct tv *v = var( KVAL );
+  v->u.kv.key = strdup( key );
+  v->u.kv.val = vdup( val );
+  return v;
+} // vkvar
 void vfree( struct tv *v ){
   if( v ){
     switch( v->t ){
+    case STR:
+    case NAM:
+      free( v->u.str ); v->u.str = 0;
+      break;
     case STRS:
       free( v->u.s.buf ); v->u.s.buf = 0; v->u.s.top = -1 ;
       break;
@@ -98,9 +133,10 @@ void vfree( struct tv *v ){
       } // for
       free( v->u.v.buf ); v->u.v.buf = 0; v->u.v.top = -1 ;
       break;
-    case KVS:
+    case KS:
       for( int i = 0; i <= v->u.k.top; i ++ ){
 	struct tkv *kv = v->u.k.buf[ i ];
+	free( kv->key );
 	vfree( kv->val );
 	free( kv );
       } // for
@@ -115,7 +151,7 @@ void vfree( struct tv *v ){
 int push( char *str , struct tv **cx ){
   if( *cx ){
     if( (*cx)->t != STRS )
-      xerr("push: unexpected typ");
+      xerr("push: unexp typ");
   } else {
     *cx = var( STRS );
   }
@@ -138,7 +174,7 @@ char *pop( struct tv *cx ){
       }
       break;
     default:
-      xerr("pop: unexpectd typ");
+      xerr("pop: unexp typ");
     } // switch
   } // if cx
   xerr("pop: cx null");
@@ -147,7 +183,7 @@ char *pop( struct tv *cx ){
 int vpush( struct tv *val , struct tv **cx ){
   if( *cx ){
     if( (*cx)->t != VS )
-      xerr("vpush: unexpected typ");
+      xerr("vpush: unexp typ");
   } else {
     *cx = var( VS );
   }
@@ -170,7 +206,7 @@ struct tv *vpop ( struct tv *cx ){
       }
       break;
     default:
-      xerr("vpop: unexpectd typ");
+      xerr("vpop: unexp typ");
     } // switch
   } // if cx
   xerr("vpop: cx null");
@@ -179,7 +215,7 @@ struct tv *vpop ( struct tv *cx ){
 int vunshift( struct tv *val , struct tv **cx ){
   if( *cx ){
     if( (*cx)->t != VS )
-      xerr("vunshift: unexpected cx typ");
+      xerr("vunshift: unexp cx typ");
   } else {
     *cx = var( VS );
   }
@@ -196,34 +232,30 @@ int vunshift( struct tv *val , struct tv **cx ){
 } // vpush
 struct tv *vshift ( struct tv *cx ){
   if( cx ){
-    switch( cx->t ){
-    case VS:
-      if( cx->u.v.top < 0 ){
-	p("vshift: empty\n");
-      } else {
-	struct tv *rt = cx->u.v.buf[ 0 ];
-	for( int i = 0 ; i < cx->u.v.top ; i ++ ){
-	  cx->u.v.buf[ i ] = cx->u.v.buf[ i + 1 ];
-	} // for
-	cx->u.v.top --;
-	return rt;
-      } // if empty
-      break;
-    default:
-      xerr("vshift: unexpectd typ");
-    } // switch
+    if( cx->t != VS ) xerr("vshift: unexp typ");
+    if( cx->u.v.top < 0 ){
+      p("vshift: empty\n");
+    } else {
+      struct tv *rt = cx->u.v.buf[ 0 ];
+      for( int i = 0 ; i < cx->u.v.top ; i ++ ){
+	cx->u.v.buf[ i ] = cx->u.v.buf[ i + 1 ];
+      } // for
+      cx->u.v.top --;
+      return rt;
+    } // if empty
+  } else {
+    xerr("vshift: cx null");
   } // if cx
-  xerr("vshift: cx null");
   return 0;
 } // vshift
 int kpush( struct tkv *kv , struct tv **cx ){
   if( *cx ){
-    if( (*cx)->t != KVS )
-      xerr("kpush: unexpectd typ");
+    if( (*cx)->t != KS )
+      xerr("kpush: unexp typ");
   } else {
-    *cx = var( KVS );
+    *cx = var( KS );
   } // if
-  struct tkvs *stac = &(*cx)->u.k;
+  struct tks *stac = &(*cx)->u.k;
   if ( ++stac->top >= stac->sz ){
     stac->sz += 8 * sizeof( *stac->buf );
     stac->buf = realloc( stac->buf , stac->sz );
@@ -233,7 +265,7 @@ int kpush( struct tkv *kv , struct tv **cx ){
 } // kpush
 struct tv *klookup( const char *key , const struct tv *cx ){
   switch( cx->t ){
-  case KVS:
+  case KS:
     for( int i = 0 ; i <= cx->u.k.top ; i ++ ){ // bottom to top ?
       struct tkv *kv = cx->u.k.buf[ i ];
       if( strcmp( kv->key , key ) == 0 ){
@@ -242,7 +274,7 @@ struct tv *klookup( const char *key , const struct tv *cx ){
     } // for
     break;
   default:
-    xerr("klookup: unexpectd cx typ");
+    xerr("klookup: unexp cx typ");
   } // switch
   return 0;
 } // klookup
@@ -252,7 +284,7 @@ struct tv *vtop( struct tv *v ){
     if( v->u.v.top < 0 ) xerr("vtop: empty stac");
     return v->u.v.buf[ v->u.v.top ];
   default:
-    xerr("vtop: unexpectd vs typ");
+    xerr("vtop: unexp vs typ");
   } // switch
   return 0;
 } //vtop
@@ -268,30 +300,29 @@ struct tv *namlookup( const struct tv *nam , const struct tv *cxs ){
       } // for
       break;
     default:
-      xerr("namlookup: unexpectd cxs typ");
+      xerr("namlookup: unexp cxs typ");
     } // switch
     break;
   default:
-    xerr("namlookup: unexpectd nam typ");
+    xerr("namlookup: unexp nam typ");
   } // switch
   return 0 ;
 } // namlookup
 
-int trp
+void trp
 (
  char *sigkey , struct tv *cxs , struct tv *vargs ,
- int i , struct tv **rs , struct tv **nxrs )
+ int iter , struct tv **rs , struct tv **nxrs )
 {
-  int rt = 0;
   if( strcmp( sigkey , "p" ) == 0 ){ // check builtins
     // todo: needs more work - put args in array ? 
     struct tv *options = vshift( vargs );
     struct tv *xfmt = klookup( "fmt" , options ); if( xfmt ){
-      struct tv *vfmt = 0 ; evl( xfmt , cxs , &vfmt );
+      struct tv *vfmt = 0 ; evl( xfmt , cxs , vargs , &vfmt );
       struct tv *xarg1 = klookup( "arg1" , options ); if( xarg1 ){
-	struct tv *varg1 = 0 ; evl( xarg1 , cxs , &varg1 );
+	struct tv *varg1 = 0 ; evl( xarg1 , cxs , vargs , &varg1 );
 	struct tv *xarg2 = klookup( "arg2" , options ); if( xarg2 ){
-	  struct tv *varg2 = 0 ; evl( xarg2 , cxs , &varg2 );
+	  struct tv *varg2 = 0 ; evl( xarg2 , cxs , vargs , &varg2 );
 	  p( vpop( vfmt )->u.str , vpop( varg1 )->u.num , vpop( varg2 )->u.num );
 	  vfree( varg2 );
 	} else {
@@ -305,26 +336,25 @@ int trp
     } else
       xerr("trp: p: no fmt");
   } else if( strcmp( sigkey , "incr" ) == 0 ){
-    (*rs)->u.num ++ ;
+    vtop( *rs )->u.num ++ ;
   } else if( strcmp( sigkey , "test" ) == 0 ){
     struct tv *options = vshift( vargs );
     struct tv *xcmp = klookup( "cmp" , options ); if( xcmp ){
-      struct tv *vcmp = 0 ; evl( xcmp , cxs , &vcmp );
+      struct tv *vcmp = 0 ; evl( xcmp , cxs , vargs , &vcmp );
       struct tv *xeq = klookup( "eq" , options );
-      if( xeq && (*rs)->u.num == vtop( vcmp )->u.num ){
-	evl( xeq , cxs , nxrs );
+      if( xeq && vtop( *rs )->u.num == vtop( vcmp )->u.num ){
+	evl( xeq , cxs , vargs , nxrs );
       } // if eq
-      vfree( vcmp );
     } else
       xerr("trp: test: no cmp");
-  } else if( strcmp( sigkey , "break" ) == 0 ){
+  } else if( strcmp( sigkey , "brk" ) == 0 ){
     p("here");
   } else if( strcmp( sigkey , "open" ) == 0 ){
     struct tv *options = vshift( vargs );
     struct tv *xpath; if(( xpath = klookup( "path" , options ) )){
-      struct tv *vpath = 0 ; evl( xpath , cxs , &vpath );
+      struct tv *vpath = 0 ; evl( xpath , cxs , vargs , &vpath );
       struct tv *xoflag; if(( xoflag = klookup( "oflag" , options ) )){
-	struct tv *voflag = 0 ; evl( xoflag , cxs , &voflag );
+	struct tv *voflag = 0 ; evl( xoflag , cxs , vargs , &voflag );
 	struct tv *vnum;
 	( vnum  = var( NUM ) )->u.num =
 	  open( vpop( vpath )->u.str , vpop( voflag )->u.num );
@@ -334,134 +364,110 @@ int trp
       } // if oflag
       vfree( vpath );
     } // if xpath
-  } else {
+  } else { // trp lookup
     struct tv *xchain; if(( xchain = klookup( sigkey , vtop( *rs ) ) )){
-      struct tv *subrs = 0 ;
-      switch( xchain->t ){
-      case VS: // evl dot xchain
-	if( vargs ){ // pass args ?
-	  if( klookup( "_args" , vtop( *rs ) ) ){
-	    xerr("trp: duplicate _args");
-	  } else {
-	    kpush( // on top
-		kvar( "_args" , vshift( vargs ) ) , // reservd nam
-		&(*rs)->u.v.buf[ (*rs)->u.v.top ] // last result
-		);
-	  } // if
-	} // if
-
-	vunshift( vtop( *rs ) , &cxs ); // left to right
-	evl( xchain , cxs , &subrs );
-	vshift( cxs ); // right to left
-
-	if( subrs ){ // pass back results ?
-	  vpop( *rs ); vpush( vpop( subrs ) , rs );
-	}
-	break;
-      default:
-	xerr("trp: unexpectd code typ");
-      } // switch
-      vfree( subrs ); // drop others ?
+      vunshift( vtop( *rs ) , &cxs ); // left to right
+      evl( xchain , cxs , vargs , nxrs );
+      vshift( cxs ); // right to left
     } else {
       xerr("trp: no code");
     } // if code
   } // if builtins
-  return rt ;
 } // trp
-void evl( const struct tv *xchain , struct tv *cxs , struct tv **rs ){
+void evl( const struct tv *xchain , struct tv *cxs , struct tv *vargs , struct tv **rs ){
   if( xchain ){
-    switch( xchain->t ){
-    case VS: // xchain or array ?
-      for( int i = 0; i <= xchain->u.v.top; i ++ ){
-	struct tv *tok = xchain->u.v.buf[ i ]->tok ;
-	switch( tok->t ){
-	case VS : // [ array ]
-	  {
-	    struct tv *rarray = 0; // prepar results array
-	    for( int i = 0 ; i <= tok->u.v.top ; i ++ ){
-	      vpush( 0 , &rarray );
-	    } // for
+    if( xchain->t != VS ) xerr("evl: unexp typ");
+    for( int i = 0; i <= xchain->u.v.top; i ++ ){
+      struct tv *tok = xchain->u.v.buf[ i ]->tok ;
+      switch( tok->t ){
+      case VS : // [ array ]
+	{
+	  struct tv *rarray = 0; // prepar results array
+	  for( int i = 0 ; i <= tok->u.v.top ; i ++ ){
+	    vpush( 0 , &rarray );
+	  } // for
 
-	    for( int i = 0 ; i <= tok->u.v.top ; i ++ ){
-	      evl( tok->u.v.buf[ i ] , cxs ,
-		   &rarray->u.v.buf[ i ] );
-	    } // for
+	  for( int i = 0 ; i <= tok->u.v.top ; i ++ ){
+	    evl( tok->u.v.buf[ i ] , cxs , vargs ,
+		 &rarray->u.v.buf[ i ] );
+	  } // for
 	    
-	    vpush( rarray , rs ); // pass back results
-	  }
-	  break;
-	case NUM: // 123
-	case KVS: // { obj }
-	case STR: // "string"
-	  vpush( tok , rs ); // todo: escap strings here ?
-	  break;
-	case KV: // func()
-	  { struct tv *vargs = 0 , *nxrs = 0 ;
-	    struct tv *argchain; if(( argchain = tok->u.kv->val )){
-	      switch( argchain->t ){
-	      case VS :
-		for( int i = 0 ; i <= argchain->u.v.top ; i ++ ){
-		  evl( argchain->u.v.buf[ i ] , cxs , &vargs );
-		} // for
-		break;
-	      default:
-		xerr("evl: unexpectd arg typ");
-	      } // switch
-	    } // if
-	    char *sigkey ; if( strcmp( sigkey = tok->u.kv->key , "loop" ) == 0 ){
-	      struct tv *loopsig; if(( loopsig = vshift( vargs ) )){
-		switch( loopsig->t ){
-		case STR : sigkey = loopsig->u.str ; break;
-		default: xerr("evl: unexpectd loopsig typ");
-		} // switch
-		int i = 0; while( trp( sigkey , cxs , vargs , i ++ , rs , &nxrs ) ){
-		  // ?
-		} // while
-	      } else {
-		xerr("evl: no loopsig key");
+	  if( *rs ) vpop( *rs );
+	  vpush( rarray , rs ); // pass back results
+	}
+	break;
+      case NUM: // 123
+	{
+	  struct tv *num; ( num = var( NUM ) )->u.num = tok->u.num ;
+	  vpush( num , rs );
+	} break;
+      case KS: // { obj }
+	{
+	  struct tv *kvals = 0;
+	  for( int i = 0; i <= tok->u.k.top; i ++ ){
+	    struct tkv *kv = tok->u.k.buf[ i ];
+	    kpush( kvar( kv->key , kv->val ) , &kvals );
+	  } // for
+	  vpush( kvals, rs );
+	} break;
+      case STR: // "string"
+	vpush( tok , rs ); // todo: escap strings here ?
+	break;
+      case KVAL: // func()
+	{ struct tv *nxvargs = 0 ;
+	  struct tv *argchain; if(( argchain = tok->u.kv.val )){
+	    if( argchain->t != VS ) xerr("evl: unexp argchain typ");
+	    for( int i = 0 ; i <= argchain->u.v.top ; i ++ ){
+	      evl( argchain->u.v.buf[ i ] , cxs , vargs , &nxvargs );
+	    } // for
+	  } // if argchain
+	  struct tv *nxrs = 0 ;
+	  char *sigkey ; if( strcmp( sigkey = tok->u.kv.key , "loop" ) == 0 ){
+	    struct tv *loopsig; if(( loopsig = vshift( nxvargs ) )){
+	      if( loopsig->t != STR ) xerr("evl: unexp loopsig typ");
+	      int i = 0; while( 1 ){
+		trp( loopsig->u.str , cxs , nxvargs , i ++ , rs , &nxrs );
 	      }
 	    } else {
-	      trp( sigkey , cxs , vargs , 0 , rs , &nxrs); // one shot
-	    } // if loop
-	    if( nxrs ){ // have next result ?
-	      vpop( *rs ); vpush( vpop( nxrs ) , rs );
-	      vfree( nxrs );
-	    }
-	    vfree( vargs );
-	  } // vargs closure
-	  break;
-	case NAM: // plain nam
-	  if( strcmp( tok->u.str , "sys" ) == 0 ){ // rservd
-	    static struct tv *syscx = 0; if( !syscx ){ // persist in memory
-	      kpush( kvar( "_sys" , 0 ) , &syscx );
-	    }
-	    vpush( syscx , rs );
-	  } else if( strcmp( tok->u.str , "_arg" ) == 0 ){ // rservd
-	    vpush( klookup( "_args" , cxs->u.v.buf[ 0 ] ) , rs ); // at bottom ?
+	      xerr("evl: no loopsig");
+	    } // if loopsig
 	  } else {
-	    struct tv *val ; if(( val = namlookup( tok , cxs ) )){
-	      vpush( val , rs );
-	    } else xerr("evl: nam not found");
-	  } // if
-	  break;
-	default:
-	  xerr("evl: unexpectd tok typ");
-	  break;
-	} // switch tok->t
-      } // for
-      break;
-    default:
-      xerr("evl: unexpectd typ");
-    } // switch xchain->t
+	      trp( sigkey , cxs , nxvargs , 0 , rs , &nxrs );
+	  } // if loop
+
+	  if( nxrs ){ // have next result ?
+	    vpop( *rs ); vpush( vpop( nxrs ) , rs );
+	    vfree( nxrs );
+	  }
+	  vfree( nxvargs );
+	} // nxvargs closure
+	break;
+      case NAM: // plain nam
+	if( strcmp( tok->u.str , "sys" ) == 0 ){ // rservd
+	  static struct tv *syscx = 0; if( !syscx ){ // persist in memory
+	    kpush( kvar( "_sys" , 0 ) , &syscx ); // todo: temp placeholder ?
+	  }
+	  vpush( syscx , rs );
+	} else if( strcmp( tok->u.str , "_arg" ) == 0 ){ // rservd
+	  vpush( vargs , rs );
+	} else {
+	  struct tv *val ; if(( val = namlookup( tok , cxs ) )){
+	    vpush( val , rs );
+	  } else xerr("evl: nam not found");
+	} // if
+	break;
+      default:
+	xerr("evl: unexp tok typ");
+	break;
+      } // switch tok->t
+    } // for
   } // if xchain
 }// evl
 struct tv *parse( char *buf ){
   char *left = trim( buf );
   struct tv *xchain = 0; while ( *left ){
     char *right = gettok ( left , '.' );
-    struct tv *v = var( STR );
-    v->u.str = trim ( left );
-    vpush ( v , &xchain );
+    vpush ( vstr( trim ( left ) ) , &xchain );
     left = right ;
   } // while
   for( int i = 0 ; xchain && i <= xchain->u.v.top ; i ++ ){
@@ -471,7 +477,7 @@ struct tv *parse( char *buf ){
     switch( *end ){
     case '"' : // c-string
       *end = 0 ;
-      ( *tok = var( STR ) )->u.str = left + 1 ;
+      *tok = vstr( left + 1 );
       break;
     case ')' : // function call
       *end = 0 ;
@@ -481,7 +487,7 @@ struct tv *parse( char *buf ){
 	vpush( parse( args ) , &vargs );
 	args = right;
       } // while
-      ( *tok = var( KV ) )->u.kv = kvar( trim( left ) , vargs );
+      *tok = vkvar( trim( left ) , vargs );
       break;
     case '}' : // object pairs - key : vl , ...
       *end = 0 ;
@@ -512,7 +518,7 @@ struct tv *parse( char *buf ){
 	  ( *tok = var( NUM ) )->u.num =
 	    strtol( left , 0 , strncasecmp( left , "0x" , 2 ) ? 10 : 16 );
 	} else {
-	  ( *tok = var( NAM ) )->u.str = left ;
+	  *tok = vstr( left ) ;
 	} // if num
       } else {
 	xerr("parse: not yet");
@@ -554,16 +560,16 @@ void dmp( struct tv *v ){
 	}
       } p(" ]");
       break;
-    case KV:
-      kdmp( v->u.kv );
+    case KVAL:
+      kdmp( &v->u.kv );
       break;
-    case KVS:
+    case KS:
       p("{ "); for( int i = 0 ; i <= v->u.k.top ; i ++ ){
 	if( i ) p(", "); kdmp( v->u.k.buf[ i ] );
       } p(" }");
       break;
     default:
-      xerr("dmp: unexpectd typ");
+      xerr("dmp: unexp typ");
     } // switch
   } else {
     p("(nul)");
@@ -588,19 +594,15 @@ int main ( int argc, char *argv [] )
   struct tv *vargs = 0 ; for( int i = 0 ; i < argc ; i ++ ){
     push( argv [ i ] , &vargs );
   } // for
-  struct tv *maincx = 0; kpush( kvar( "_args" , vargs ) , &maincx );
-
-  struct tv *cxs = 0; vunshift( maincx , &cxs ); // left to right ?
   struct tv *xchain = parse( buf );
-  struct tv *rs = 0; evl( xchain , cxs , &rs );
+  struct tv *rs = 0; evl( xchain , 0 , vargs , &rs );
 
   p("\nrs:"); dmp( rs );
   p("\nxchain:"); dmp( xchain );
-  p("\ncxs:"); dmp( cxs );
+  p("\nvargs:"); dmp( vargs );
   vfree( rs );
   vfree( xchain );
-  vfree( cxs );
-
+  vfree( vargs );
   free( buf );
   p("\nmain: end");
 } // main
