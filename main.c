@@ -9,7 +9,7 @@
 #include <sys/errno.h>
 //#include <ctype.h>
 #include <fcntl.h> // open
-int ( *p )( const char *, ...) = printf; // alias
+int ( *p )( const char *, ... ) = printf; // alias
 int xerr( const char *s ){ perror(s); exit(errno); }
 void *xmalloc( size_t size ){
   void *rt; if(!( rt = malloc( size ) )) xerr("xmalloc"); return rt;
@@ -17,7 +17,7 @@ void *xmalloc( size_t size ){
 void *xcalloc( size_t count , size_t size ){
   void *rt; if(!( rt = calloc( count , size ) )) xerr("cmalloc"); return rt;
 } // xcalloc
-char *trim ( char *str ){
+char *trim( char *str ){
   while( *str == ' ' || *str == '\n' || *str == '\t' ) str ++ ;
   if(*str == 0) return str; // All spaces?
   char *end = str + strlen(str) - 1; // Trim trailing space
@@ -28,40 +28,42 @@ char *trim ( char *str ){
   *(end+1) = 0; // Write new null terminator
   return str;
 } // trim
-char *gettok ( char *buf , char delim ){
+char *gettok( char *buf , char delim ){
   int quot = 0 , brac = 0 , squar = 0 ;
   char *pc = buf , *end = buf + strlen( buf );
-  while (pc < end){
-    if ( *pc == '"'){
-      quot ++ ;
-    } else if ( *pc == '{' ){ brac ++ ;
-    } else if ( *pc == '}' ){ brac -- ;
-    } else if ( *pc == '[' ){ squar ++ ;
-    } else if ( *pc == ']' ){ squar -- ;
-    } else if ( *pc == delim ){
+  while(pc < end){
+    if( *pc == '"') quot ++ ;
+    else if( *pc == '{' ) brac ++ ;
+    else if( *pc == '}' ) brac -- ;
+    else if( *pc == '[' ) squar ++ ;
+    else if( *pc == ']' ) squar -- ;
+    else if( *pc == delim ){
       if ( quot % 2 == 0 && brac == 0 && squar == 0 ){
-	*pc++ = 0;
-	break;
+	*pc++ = 0; break;
       } // if
-    } // if
-    pc++;
+    } pc ++ ;
   } // while
   return pc;
 } // gettok
 #define FLOOP 0x1
 struct tv {
-  struct tv *tok ; // todo: testing
+  struct tv *x ; // child parse tree
   enum {
-    NUM,STR,NAM,KVAL,
-    STRS,VS,KS // STACKS
+    // TOKs point to file buf, so do no mem alloc for strings, for parsing
+    NUM, // long
+    STR,NAM,TOK, // quoted "c-string"
+    KVAL,KTOK, // pair { c-string : val }
+    STRS,TOKS, // [ c-string , ... ]
+    VS, // [ val , ... ]
+    KS // [ { c-string : val } , ... ]
   } t ;
   union {
-    char *str ; // STR
     long num ; // NUM
-    struct tkv {char *key; struct tv *val;} kv; // KVAL
-    struct tstrs {int top; size_t sz; char **buf;} s; // STRS
+    char *str ; // STR/NAM/TOK
+    struct tk { char *key; struct tv *val;} kv; // KVAL/KTOK
+    struct tstrs {int top; size_t sz; char **buf;} s; // STRS/TOKS
     struct tvs {int top; size_t sz; struct tv **buf;} v; // VS
-    struct tks {int top; size_t sz; struct tkv **buf;} k; // KS
+    struct tks {int top; size_t sz; struct tk **buf;} k; // KS
   } u ;
 }; // tv
 void evl( const struct tv *, struct tv *, struct tv * , struct tv ** );
@@ -69,15 +71,16 @@ void evl( const struct tv *, struct tv *, struct tv * , struct tv ** );
 struct tv *var( int t ){
   struct tv *v = xcalloc( 1 , sizeof(struct tv) );
   switch( v->t = t ){
-  case STR:
-  case NAM:
   case NUM:
-  case KVAL:
+  case STR: case NAM: case TOK:
+  case KVAL: case KTOK:
     break;
-  case STRS: v->u.s.top = -1 ; break;
+  case STRS: case TOKS:
+    v->u.s.top = -1 ; break;
   case VS: v->u.v.top = -1 ; break;
   case KS: v->u.k.top = -1 ; break;
-  default: xerr("var: unexp typ"); break;
+  default:
+    xerr("var: unexp typ");
   } // switch
   return v;
 } // var
@@ -100,176 +103,146 @@ struct tv *vdup( const struct tv *v ){
   } // switch
   return rt;
 } // vdup
+
 struct tv *vstr( const char *s ){
-  struct tv *rt = var( STR );
-  rt->u.str = strdup( s );
+  struct tv *rt; ( rt = var( STR ) )->u.str = strdup( s ); // mem alloc
   return rt;
 } // vstr
-struct tkv *kvar( const char *key , struct tv *val ){
-  struct tkv *kv = xmalloc( sizeof( struct tkv ) );
-  kv->key = strdup( key );
-  kv->val = vdup( val );
-  return kv;
-} // kvar
+struct tv *vtok( char *s ){
+  struct tv *rt; ( rt = var( TOK ) )->u.str = s; // no mem alloc
+  return rt;
+} // vtok
 struct tv *vkvar( const char *key , struct tv *val ){
-  struct tv *v = var( KVAL );
-  v->u.kv.key = strdup( key );
-  v->u.kv.val = vdup( val );
-  return v;
+  struct tv *rt; ( rt = var( KVAL ) )->u.kv.key = strdup( key );
+  rt->u.kv.val = val ; // mem alloc ?
+  return rt;
 } // vkvar
-void vfree( struct tv *v ){
-  if( v ){
-    switch( v->t ){
-    case STR:
-    case NAM:
-      free( v->u.str ); v->u.str = 0;
-      break;
-    case STRS:
-      free( v->u.s.buf ); v->u.s.buf = 0; v->u.s.top = -1 ;
-      break;
-    case VS:
-      for( int i = 0; i <= v->u.v.top; i ++ ){
-	vfree( v->u.v.buf[ i ] );
-      } // for
-      free( v->u.v.buf ); v->u.v.buf = 0; v->u.v.top = -1 ;
-      break;
-    case KS:
-      for( int i = 0; i <= v->u.k.top; i ++ ){
-	struct tkv *kv = v->u.k.buf[ i ];
-	free( kv->key );
-	vfree( kv->val );
-	free( kv );
-      } // for
-      free( v->u.k.buf ); v->u.k.buf = 0; v->u.k.top = -1 ;
-      break;
-    default:
-      break;
-    } // switch
-    free( v ); 
-  } // if v
-} // vfree
-int push( char *str , struct tv **cx ){
+struct tv *vtokvar( char *key , struct tv *val ){
+  struct tv *rt; ( rt = var( KTOK ) )->u.kv.key = key;
+  rt->u.kv.val = val ; // mem alloc ?
+  return rt;
+} // vktokvar
+
+struct tk *kvar( const char *key , struct tv *val ){
+  struct tk *rt; ( rt = xmalloc( sizeof( struct tk ) ) )->key = strdup( key );
+  rt->val = val ; // mem alloc ?
+  return rt;
+} // kvar
+struct tk *ktokvar( char *key , struct tv *val ){
+  struct tk *rt; ( rt = xmalloc( sizeof( struct tk ) ) )->key = key;
+  rt->val = val ; // mem alloc ?
+  return rt;
+} // ktokvar
+
+int push( const char *str , struct tv **cx ){
   if( *cx ){
     if( (*cx)->t != STRS )
       xerr("push: unexp typ");
-  } else {
-    *cx = var( STRS );
-  }
-  struct tstrs *stac = &(*cx)->u.s;
-  if ( ++stac->top >= stac->sz ){
-    stac->sz += 8 * sizeof( *stac->buf );
-    stac->buf = realloc( stac->buf , stac->sz );
-  }
-  stac->buf[ stac->top ] = str ;
-  return stac->top ;
+  } else *cx = var( STRS );
+  if( ++ (*cx)->u.s.top >= (*cx)->u.s.sz ){
+    (*cx)->u.s.buf = realloc
+      ( (*cx)->u.s.buf , (*cx)->u.s.sz += 8 * sizeof( struct tv ) );
+  } (*cx)->u.s.buf[ (*cx)->u.s.top ] = strdup( str ); // mem alloc
+  return (*cx)->u.s.top ;
 } // push
+int tokpush( char *str , struct tv **cx ){
+  if( *cx ){
+    if( (*cx)->t != TOKS )
+      xerr("tokpush: unexp typ");
+  } else *cx = var( TOKS );
+  if ( ++ (*cx)->u.s.top >= (*cx)->u.s.sz ){
+    (*cx)->u.s.buf = realloc
+      ( (*cx)->u.s.buf , (*cx)->u.s.sz += 8 * sizeof( struct tv ) );
+  } (*cx)->u.s.buf[ (*cx)->u.s.top ] = str ; // no mem alloc
+  return (*cx)->u.s.top ;
+} // tokpush
+
 char *pop( struct tv *cx ){
   if( cx ){
-    switch( cx->t ){
-    case STRS:
-      if( cx->u.s.top < 0 ){
-	p("pop: empty\n");
-      } else {
-	return cx->u.s.buf[ cx->u.s.top -- ];
-      }
-      break;
-    default:
+    if( cx->t != STRS )
       xerr("pop: unexp typ");
-    } // switch
-  } // if cx
-  xerr("pop: cx null");
+    if( cx->u.s.top < 0 ){
+      p("pop: empty\n");
+    } else {
+      return cx->u.s.buf[ cx->u.s.top -- ];
+    }
+  } else xerr("pop: nul cx");
   return 0;
 } // pop
+struct tv *vpop( struct tv *cx ){
+  if( cx ){
+    if( cx->t != VS )
+      xerr("vpop: unexp typ");
+    if( cx->u.v.top < 0 ){
+      p("vpop: empty\n");
+    } else {
+      return cx->u.v.buf[ cx->u.v.top -- ];
+    }
+  } else xerr("vpop: nul cx");
+  return 0;
+} // vpop
+
 int vpush( struct tv *val , struct tv **cx ){
   if( *cx ){
     if( (*cx)->t != VS )
       xerr("vpush: unexp typ");
-  } else {
-    *cx = var( VS );
-  }
-  struct tvs *stac = &(*cx)->u.v;
-  if ( ++ stac->top >= stac->sz ){
-    stac->sz += 8 * sizeof( *stac->buf );
-    stac->buf = realloc( stac->buf , stac->sz );
-  }
-  stac->buf[ stac->top ] = val ;
-  return stac->top ;
+  } else *cx = var( VS );
+  if ( ++ (*cx)->u.v.top >= (*cx)->u.v.sz ){
+    (*cx)->u.v.buf = realloc
+      ( (*cx)->u.v.buf , (*cx)->u.v.sz += 8 * sizeof( struct tv ) );
+  } (*cx)->u.v.buf[ (*cx)->u.v.top ] = val;
+  return (*cx)->u.v.top;
 } // vpush
-struct tv *vpop ( struct tv *cx ){
-  if( cx ){
-    switch( cx->t ){
-    case VS:
-      if( cx->u.v.top < 0 ){
-	p("vpop: empty\n");
-      } else {
-	return cx->u.v.buf[ cx->u.v.top -- ];
-      }
-      break;
-    default:
-      xerr("vpop: unexp typ");
-    } // switch
-  } // if cx
-  xerr("vpop: cx null");
-  return 0;
-} // vpop
+int kpush( struct tk *kval , struct tv **cx ){
+  if( *cx ){
+    if( (*cx)->t != KS )
+      xerr("kpush: unexp typ");
+  } else *cx = var( KS );
+  if( ++ (*cx)->u.k.top >= (*cx)->u.k.sz ){
+    (*cx)->u.k.buf = realloc
+      ( (*cx)->u.k.buf , (*cx)->u.k.sz += 8 * sizeof( struct tk ) );
+  } (*cx)->u.k.buf[ (*cx)->u.k.top ] = kval;
+  return (*cx)->u.k.top;
+} // kpush
+
 int vunshift( struct tv *val , struct tv **cx ){
   if( *cx ){
     if( (*cx)->t != VS )
-      xerr("vunshift: unexp cx typ");
-  } else {
-    *cx = var( VS );
+      xerr("vunshift: unexp typ");
+  } else *cx = var( VS );
+  if ( ++ (*cx)->u.v.top >= (*cx)->u.v.sz ){
+    (*cx)->u.v.buf = realloc
+      ( (*cx)->u.v.buf , (*cx)->u.v.sz += 8 * sizeof( struct tv ) );
   }
-  struct tvs *stac = &(*cx)->u.v;
-  if ( ++ stac->top >= stac->sz ){
-    stac->sz += 8 * sizeof( *stac->buf );
-    stac->buf = realloc( stac->buf , stac->sz );
-  }
-  for( int i = stac->top ; i > 0 ; i -- ){
-    stac->buf[ i ] = stac->buf[ i - 1 ];
-  } // for
-  stac->buf[ 0 ] = val ;  // on left
-  return stac->top ;
-} // vpush
-struct tv *vshift ( struct tv *cx ){
+  for( int i = (*cx)->u.v.top ; i > 0 ; i -- ){
+    (*cx)->u.v.buf[ i ] = (*cx)->u.v.buf[ i - 1 ];
+  } (*cx)->u.v.buf[ 0 ] = val;  // on left ?
+  return (*cx)->u.v.top;
+} // vunshift
+struct tv *vshift( struct tv *cx ){
   if( cx ){
-    if( cx->t != VS ) xerr("vshift: unexp typ");
+    if( cx->t != VS )
+      xerr("vshift: unexp typ");
     if( cx->u.v.top < 0 ){
       p("vshift: empty\n");
     } else {
       struct tv *rt = cx->u.v.buf[ 0 ];
       for( int i = 0 ; i < cx->u.v.top ; i ++ ){
 	cx->u.v.buf[ i ] = cx->u.v.buf[ i + 1 ];
-      } // for
-      cx->u.v.top --;
+      } cx->u.v.top --;
       return rt;
     } // if empty
-  } else {
-    xerr("vshift: cx null");
-  } // if cx
+  } else xerr("vshift: nul cx");
   return 0;
 } // vshift
-int kpush( struct tkv *kv , struct tv **cx ){
-  if( *cx ){
-    if( (*cx)->t != KS )
-      xerr("kpush: unexp typ");
-  } else {
-    *cx = var( KS );
-  } // if
-  struct tks *stac = &(*cx)->u.k;
-  if ( ++stac->top >= stac->sz ){
-    stac->sz += 8 * sizeof( *stac->buf );
-    stac->buf = realloc( stac->buf , stac->sz );
-  }
-  stac->buf[ stac->top ] = kv;
-  return stac->top ;
-} // kpush
+
 struct tv *klookup( const char *key , const struct tv *cx ){
   switch( cx->t ){
   case KS:
     for( int i = 0 ; i <= cx->u.k.top ; i ++ ){ // bottom to top ?
-      struct tkv *kv = cx->u.k.buf[ i ];
-      if( strcmp( kv->key , key ) == 0 ){
-	return kv->val ;
+      struct tk *kval = cx->u.k.buf[ i ];
+      if( strcmp( kval->key , key ) == 0 ){
+	return kval->val ;
       } // if
     } // for
     break;
@@ -288,6 +261,37 @@ struct tv *vtop( struct tv *v ){
   } // switch
   return 0;
 } //vtop
+void vfree( struct tv *v ){
+  if( v ){
+    switch( v->t ){
+    case STR:
+    case NAM:
+      free( v->u.str ); v->u.str = 0;
+      break;
+    case STRS:
+      free( v->u.s.buf ); v->u.s.buf = 0; v->u.s.top = -1 ;
+      break;
+    case VS:
+      for( int i = 0; i <= v->u.v.top; i ++ ){
+	vfree( v->u.v.buf[ i ] );
+      } // for
+      free( v->u.v.buf ); v->u.v.buf = 0; v->u.v.top = -1 ;
+      break;
+    case KS:
+      for( int i = 0; i <= v->u.k.top; i ++ ){
+	struct tk *kval = v->u.k.buf[ i ];
+	free( kval->key );
+	vfree( kval->val );
+	free( kval );
+      } // for
+      free( v->u.k.buf ); v->u.k.buf = 0; v->u.k.top = -1 ;
+      break;
+    default:
+      break;
+    } // switch
+    free( v ); 
+  } // if v
+} // vfree
 struct tv *namlookup( const struct tv *nam , const struct tv *cxs ){
   switch( nam->t ){
   case NAM :
@@ -295,7 +299,7 @@ struct tv *namlookup( const struct tv *nam , const struct tv *cxs ){
     case VS :
       for( int i = 0 ; i <= cxs->u.v.top ; i ++ ){ // left to right ?
 	struct tv *v; if(( v = klookup( nam->u.str , cxs->u.v.buf[ i ] ) )){
-	  return vtop( v )->tok ;
+	  return vtop( v )->x ;
 	}
       } // for
       break;
@@ -365,20 +369,20 @@ void trp
       vfree( vpath );
     } // if xpath
   } else { // trp lookup
-    struct tv *xchain; if(( xchain = klookup( sigkey , vtop( *rs ) ) )){
+    struct tv *xstac; if(( xstac = klookup( sigkey , vtop( *rs ) ) )){
       vunshift( vtop( *rs ) , &cxs ); // left to right
-      evl( xchain , cxs , vargs , nxrs );
+      evl( xstac , cxs , vargs , nxrs );
       vshift( cxs ); // right to left
     } else {
       xerr("trp: no code");
     } // if code
   } // if builtins
 } // trp
-void evl( const struct tv *xchain , struct tv *cxs , struct tv *vargs , struct tv **rs ){
-  if( xchain ){
-    if( xchain->t != VS ) xerr("evl: unexp typ");
-    for( int i = 0; i <= xchain->u.v.top; i ++ ){
-      struct tv *tok = xchain->u.v.buf[ i ]->tok ;
+void evl( const struct tv *xstac , struct tv *cxs , struct tv *vargs , struct tv **rs ){
+  if( xstac ){
+    if( xstac->t != VS ) xerr("evl: unexp typ");
+    for( int i = 0; i <= xstac->u.v.top; i ++ ){
+      struct tv *tok = xstac->u.v.buf[ i ]->x ;
       switch( tok->t ){
       case VS : // [ array ]
 	{
@@ -405,22 +409,24 @@ void evl( const struct tv *xchain , struct tv *cxs , struct tv *vargs , struct t
 	{
 	  struct tv *kvals = 0;
 	  for( int i = 0; i <= tok->u.k.top; i ++ ){
-	    struct tkv *kv = tok->u.k.buf[ i ];
-	    kpush( kvar( kv->key , kv->val ) , &kvals );
+	    struct tk *kval = tok->u.k.buf[ i ];
+	    kpush( kvar( kval->key , kval->val ) , &kvals );
 	  } // for
 	  vpush( kvals, rs );
 	} break;
-      case STR: // "string"
+      case STR: // "c-string"
+      case TOK: // "c-string" ?
 	vpush( tok , rs ); // todo: escap strings here ?
 	break;
+      case KTOK: // func()
       case KVAL: // func()
 	{ struct tv *nxvargs = 0 ;
-	  struct tv *argchain; if(( argchain = tok->u.kv.val )){
-	    if( argchain->t != VS ) xerr("evl: unexp argchain typ");
-	    for( int i = 0 ; i <= argchain->u.v.top ; i ++ ){
-	      evl( argchain->u.v.buf[ i ] , cxs , vargs , &nxvargs );
+	  struct tv *argstac; if(( argstac = tok->u.kv.val )){
+	    if( argstac->t != VS ) xerr("evl: unexp argstac typ");
+	    for( int i = 0 ; i <= argstac->u.v.top ; i ++ ){
+	      evl( argstac->u.v.buf[ i ] , cxs , vargs , &nxvargs );
 	    } // for
-	  } // if argchain
+	  } // if argstac
 	  struct tv *nxrs = 0 ;
 	  char *sigkey ; if( strcmp( sigkey = tok->u.kv.key , "loop" ) == 0 ){
 	    struct tv *loopsig; if(( loopsig = vshift( nxvargs ) )){
@@ -461,64 +467,62 @@ void evl( const struct tv *xchain , struct tv *cxs , struct tv *vargs , struct t
 	break;
       } // switch tok->t
     } // for
-  } // if xchain
+  } // if xstac
 }// evl
-struct tv *parse( char *buf ){
-  char *left = trim( buf );
-  struct tv *xchain = 0; while ( *left ){
-    char *right = gettok ( left , '.' );
-    vpush ( vstr( trim ( left ) ) , &xchain );
-    left = right ;
+struct tv *xparse( char *buf ){
+  char *xleft = trim( buf );
+  struct tv *xstac = 0; while ( *xleft ){
+    char *xright = gettok ( xleft , '.' );
+    vpush ( vtok( trim ( xleft ) ) , &xstac );
+    xleft = xright ;
   } // while
-  for( int i = 0 ; xchain && i <= xchain->u.v.top ; i ++ ){
-    left = xchain->u.v.buf[ i ]->u.str ;
-    char *end = left + strlen ( left ) - 1 ;
-    struct tv **tok = &xchain->u.v.buf[ i ]->tok ;
-    switch( *end ){
-    case '"' : // c-string
-      *end = 0 ;
-      *tok = vstr( left + 1 );
+  for( int i = 0 ; xstac && i <= xstac->u.v.top ; i ++ ){
+    xleft = xstac->u.v.buf[ i ]->u.str ;
+    char *xend = xleft + strlen ( xleft ) - 1 ;
+    struct tv **x = &xstac->u.v.buf[ i ]->x ;
+    switch( *xend ){
+    case '"' : // "c-string"
+      *x = vtok( xleft );
       break;
-    case ')' : // function call
-      *end = 0 ;
-      char *args = gettok( left , '(' );
-      struct tv *vargs = 0 ; while( *args ){
-	char *right = gettok ( args , ',' );
-	vpush( parse( args ) , &vargs );
-	args = right;
+    case ')' : // func() call
+      *xend = 0 ;
+      char *xargs = gettok( xleft , '(' );
+      struct tv *vtokargs = 0 ; while( *xargs ){
+	char *xright = gettok ( xargs , ',' );
+	vpush( xparse( xargs ) , &vtokargs );
+	xargs = xright;
       } // while
-      *tok = vkvar( trim( left ) , vargs );
+      *x = vtokvar( trim( xleft ) , vtokargs );
       break;
-    case '}' : // object pairs - key : vl , ...
-      *end = 0 ;
-      struct tv *tmp = 0;
-      left = left + 1 ; while( *left ){
-	char *right = gettok ( left , ',' );
-	push( trim( left ) , &tmp );
-	left = right;
+    case '}' : // object pairs [ { key : val } , ... ]
+      *xend = 0 ;
+      struct tv *toktmp = 0;
+      xleft = xleft + 1 ; while( *xleft ){
+	char *xright = gettok ( xleft , ',' );
+	tokpush( trim( xleft ) , &toktmp );
+	xleft = xright;
       } // while
-      for( int i = 0; tmp && i <= tmp->u.s.top; i ++ ){
-	left = tmp->u.s.buf[ i ];
-	char *right = gettok ( left , ':' );
-	kpush( kvar( trim( left ) , parse( right ) ) , tok );
+      for( int i = 0; toktmp && i <= toktmp->u.s.top; i ++ ){
+	xleft = toktmp->u.s.buf[ i ];
+	char *xright = gettok ( xleft , ':' );
+	kpush( ktokvar( trim( xleft ) , xparse( xright ) ), x );
       } // while
-      vfree( tmp );
       break;
-    case ']' : // object pairs - key : vl , ...
-      *end = 0 ;
-      left = left + 1 ; while( *left ){
-	char *right = gettok ( left , ',' );
-	vpush( parse( left ) , tok );
-	left = right;
+    case ']' : // [ c-string , ... ]
+      *xend = 0 ;
+      xleft = xleft + 1 ; while( *xleft ){
+	char *xright = gettok ( xleft , ',' );
+	vpush( xparse( xleft ) , x );
+	xleft = xright;
       } // while
       break;
     default:
-      if( *end >= '!' && *end <= '~' ){
-	if( *left >= '0' && *left <= '9' ){
-	  ( *tok = var( NUM ) )->u.num =
-	    strtol( left , 0 , strncasecmp( left , "0x" , 2 ) ? 10 : 16 );
+      if( *xend >= '!' && *xend <= '~' ){
+	if( *xleft >= '0' && *xleft <= '9' ){
+	  ( *x = var( NUM ) )->u.num =
+	    strtol( xleft , 0 , strncasecmp( xleft , "0x" , 2 ) ? 10 : 16 );
 	} else {
-	  *tok = vstr( left ) ;
+	  *x = vtok( xleft );
 	} // if num
       } else {
 	xerr("parse: not yet");
@@ -526,12 +530,12 @@ struct tv *parse( char *buf ){
       break;
     } // switch *end
   } // for
-  return xchain;
+  return xstac;
 } // parse
 void dmp( struct tv * );
-void kdmp( struct tkv *kv ){
-  p("%s: ", kv->key );
-  struct tv *v = kv->val; dmp( v && v->tok ? v->tok : v );
+void kdmp( struct tk *kval ){
+  p("%s: ", kval->key );
+  struct tv *v = kval->val; dmp( v && v->x ? v->x : v );
 } // kdmp
 void dmp( struct tv *v ){
   if( v ){
@@ -556,7 +560,7 @@ void dmp( struct tv *v ){
       p("[ "); for( int i = 0 ; i <= v->u.v.top ; i ++ ){
 	if( i ) p(", "); {
 	  struct tv *w = v->u.v.buf[ i ];
-	  dmp( w && w->tok ? w->tok : w );
+	  dmp( w && w->x ? w->x : w );
 	}
       } p(" ]");
       break;
@@ -591,17 +595,18 @@ int main ( int argc, char *argv [] )
     xerr("could not open file");
   }
   
+  struct tv *xstac = xparse( buf );
+
   struct tv *vargs = 0 ; for( int i = 0 ; i < argc ; i ++ ){
     push( argv [ i ] , &vargs );
   } // for
-  struct tv *xchain = parse( buf );
-  struct tv *rs = 0; evl( xchain , 0 , vargs , &rs );
+  struct tv *rs = 0; evl( xstac , 0 , vargs , &rs );
 
   p("\nrs:"); dmp( rs );
-  p("\nxchain:"); dmp( xchain );
+  p("\nxstac:"); dmp( xstac );
   p("\nvargs:"); dmp( vargs );
   vfree( rs );
-  vfree( xchain );
+  vfree( xstac );
   vfree( vargs );
   free( buf );
   p("\nmain: end");
