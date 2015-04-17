@@ -10,7 +10,7 @@
 //#include <ctype.h>
 #include <fcntl.h> // open
 int ( *p )( const char *, ... ) = printf; // alias
-int xerr( const char *s ){ perror(s); exit(errno); }
+int xerr( const char *s ){ fflush(NULL); perror(s); exit(errno); }
 void *xmalloc( size_t size ){
   void *rt; if(!( rt = malloc( size ) )) xerr("xmalloc"); return rt;
 } // xmalloc
@@ -77,11 +77,11 @@ struct tval {
     char *str ; // STR/NAM/TOK
     struct tstrs { int top; size_t sz; char **buf; } s; // STRS/NAMS/TOKS
 
-    struct tkval { char *key; struct tval *val; } kval; // KVAL
-    struct tks { int top; size_t sz; struct tkval **buf; } k; // KS
+    struct tkeyval { char *key; struct tval *val; } kval; // KVAL
+    struct tks { int top; size_t sz; struct tkeyval **buf; } k; // KS
 
-    struct tktok { char *key; struct tval *val; } ktok; // KTOK
-    struct txs { int top; size_t sz; struct tktok **buf; } x; // XS
+    struct tkeytok { char *key; struct tval *val; } ktok; // KTOK
+    struct txs { int top; size_t sz; struct tkeytok **buf; } x; // XS
 
     struct tvs { int top; size_t sz; struct tval **buf; } v; // VS/AS
   } u ;
@@ -117,8 +117,8 @@ struct tval *vtok( char *str ){
   return rt;
 } // vtok
 
-struct tkval *keyvar( const char *key , struct tval *val ){
-  struct tkval *rt = xmalloc( sizeof( struct tkval ) );
+struct tkeyval *keyvar( const char *key , struct tval *val ){
+  struct tkeyval *rt = xmalloc( sizeof( struct tkeyval ) );
   rt->key = strdup( key );
   rt->val = val;
   return rt;
@@ -129,18 +129,18 @@ struct tval *vkeyvar( const char *key , struct tval *val ){
   rt->u.kval.val = val;
   return rt;
 } // vkeyvar
-struct tktok *tokeyvar( char *key , struct tval *val ){
-  struct tktok *rt = xmalloc( sizeof( struct tktok ) );
+struct tkeytok *keytokvar( char *key , struct tval *val ){
+  struct tkeytok *rt = xmalloc( sizeof( struct tkeytok ) );
   rt->key = key;
   rt->val = val;
   return rt;
-} // tokeyvar
-struct tval *vtokeyvar( char *key , struct tval *val ){
+} // keytokvar
+struct tval *vkeytokvar( char *key , struct tval *val ){
   struct tval *rt = var( KTOK );
   rt->u.ktok.key = key ;
   rt->u.ktok.val = val;
   return rt;
-} // vtokeyvar
+} // vkeytokvar
 
 #define PUSH( PRE , TYP , CTYP , UTYP )				\
   int PRE ## push( CTYP val , struct tval **cx ){			\
@@ -156,8 +156,8 @@ struct tval *vtokeyvar( char *key , struct tval *val ){
   }
 PUSH( s   , STRS , char * , s )
 PUSH( tok , TOKS , char * , s )
-PUSH( k   , KS , struct tkval * , k )
-PUSH( x   , XS , struct tktok * , x )
+PUSH( key , KS , struct tkeyval * , k )
+PUSH( keytok , XS , struct tkeytok * , x )
 PUSH( a   , AS , struct tval * , v )
 PUSH( v   , VS , struct tval * , v )
 
@@ -186,7 +186,7 @@ struct tval *vdup( const struct tval *v ){
     rt->u.k.sz = v->u.k.sz;
     rt->u.k.buf = xcalloc( rt->u.k.sz , sizeof( *rt->u.k.buf ) );
     for( int i = 0; i <= rt->u.k.top; i ++ ){
-      struct tkval *val = v->u.k.buf[ i ];
+      struct tkeyval *val = v->u.k.buf[ i ];
       rt->u.k.buf[ i ] = keyvar( val->key , val->val );
     } break;
   case VS: case AS:
@@ -262,7 +262,7 @@ struct tval *klookup( const char *key , const struct tval *cx ){
   switch( cx->t ){
   case KS:
     for( int i = 0 ; i <= cx->u.k.top ; i ++ ){ // bottom to top ?
-      struct tkval *kval = cx->u.k.buf[ i ];
+      struct tkeyval *kval = cx->u.k.buf[ i ];
       if( strcmp( kval->key , key ) == 0 ){
 	return kval->val ;
       } // if
@@ -270,9 +270,16 @@ struct tval *klookup( const char *key , const struct tval *cx ){
     break;
   default:
     xerr("klookup: unexp cx typ");
-  } // switch
+  } // switch cx->t
   return 0;
 } // klookup
+struct tval *alookup( const struct tval *index , const struct tval *cx ){
+  switch( cx->t ){
+  default:
+    xerr("alookup: unexp cx typ");
+  } // switch cx->t
+  return 0;
+} // alookup
 struct tval *vtop( struct tval *v ){
   switch( v->t ){
   case VS :
@@ -283,70 +290,6 @@ struct tval *vtop( struct tval *v ){
   } // switch
   return 0;
 } //vtop
-void vfree( struct tval *v ){
-  if( v ){
-    switch( v->t ){
-    case NUM:
-      break;
-
-    case STR:
-    case NAM:
-      free( v->u.str ); // mem alloc
-    case TOK:
-      v->u.str = 0;
-      break;
-
-    case STRS:
-      for( int i = 0 ; i <= v->u.s.top ; i ++ )
-	free( v->u.s.buf[ i ] ); // mem alloc
-    case TOKS:
-      for( int i = 0 ; i <= v->u.s.top ; i ++ )
-	v->u.s.buf[ i ] = 0;
-      free( v->u.s.buf ); v->u.s.buf = 0; v->u.s.top = -1;
-      break;
-
-    case KVAL:
-      free( v->u.kval.key ); v->u.kval.key = 0; // mem alloc
-      vfree( v->u.kval.val ); v->u.kval.val = 0;
-      break;
-    case KTOK:
-      v->u.ktok.key = 0; // no mem alloc
-      vfree( v->u.ktok.val ); v->u.ktok.val = 0;
-      break;
-
-    case KS:
-      for( int i = 0; i <= v->u.k.top; i ++ ){
-	struct tkval *kval = v->u.k.buf[ i ];
-	free( kval->key ); kval->key = 0; // mem alloc
-	vfree( kval->val ); kval->val = 0;
-	free( kval ); kval = 0;
-      } // for
-      free( v->u.k.buf ); v->u.k.buf = 0; v->u.k.top = -1 ;
-      break;
-    case XS:
-      for( int i = 0; i <= v->u.x.top; i ++ ){
-	struct tktok *ktok = v->u.x.buf[ i ];
-	ktok->key = 0; // no mem alloc
-	vfree( ktok->val ); ktok->val = 0;
-	free( ktok ); ktok = 0;
-      } // for
-      free( v->u.x.buf ); v->u.x.buf = 0; v->u.x.top = -1;
-      break;
-
-    case VS:
-      for( int i = 0; i <= v->u.v.top; i ++ ){
-	vfree( v->u.v.buf[ i ] ); v->u.v.buf[ i ] = 0;
-      }
-      free( v->u.v.buf ); v->u.v.buf = 0; v->u.v.top = -1;
-      break;
-
-    default:
-      xerr("vfree: unexp typ");
-      break;
-    } // switch
-    free( v ); 
-  } // if v
-} // vfree
 struct tval *namlookup( const struct tval *nam , const struct tval *cxs ){
   switch( nam->t ){
   case NAM :
@@ -367,6 +310,73 @@ struct tval *namlookup( const struct tval *nam , const struct tval *cxs ){
   } // switch
   return 0 ;
 } // namlookup
+
+void vfree( struct tval *v ){
+  if( v ){
+    switch( v->t ){
+    case NUM:
+      break;
+
+    case STR:
+    case NAM:
+      free( v->u.str ); // mem alloc
+    case TOK:
+      v->u.str = 0;
+      break;
+
+    case STRS:
+      for( int i = 0 ; i <= v->u.s.top ; i ++ )
+	free( v->u.s.buf[ i ] ); // mem alloc
+    case TOKS:
+      for( int i = 0 ; i <= v->u.s.top ; i ++ )
+	v->u.s.buf[ i ] = 0;
+      free( v->u.s.buf ); v->u.s.buf = 0;
+      v->u.s.top = -1;
+      break;
+
+    case KVAL:
+      free( v->u.kval.key ); v->u.kval.key = 0; // mem alloc
+      vfree( v->u.kval.val ); v->u.kval.val = 0;
+      break;
+    case KS:
+      for( int i = 0; i <= v->u.k.top; i ++ ){
+	struct tkeyval *kval = v->u.k.buf[ i ];
+	free( kval->key ); kval->key = 0; // mem alloc
+	vfree( kval->val ); kval->val = 0;
+	free( kval ); kval = 0;
+      } free( v->u.k.buf ); v->u.k.buf = 0;
+      v->u.k.top = -1 ;
+      break;
+
+    case KTOK:
+      v->u.ktok.key = 0; // no mem alloc
+      vfree( v->u.ktok.val ); v->u.ktok.val = 0;
+      break;
+    case XS:
+      for( int i = 0; i <= v->u.x.top; i ++ ){
+	struct tkeytok *ktok = v->u.x.buf[ i ];
+	ktok->key = 0; // no mem alloc
+	vfree( ktok->val ); ktok->val = 0;
+	free( ktok ); ktok = 0;
+      } free( v->u.x.buf ); v->u.x.buf = 0;
+      v->u.x.top = -1;
+      break;
+
+    case VS: // ( paren )
+    case AS: // [ array ]
+      for( int i = 0; i <= v->u.v.top; i ++ ){
+	vfree( v->u.v.buf[ i ] ); v->u.v.buf[ i ] = 0;
+      } free( v->u.v.buf ); v->u.v.buf = 0;
+      v->u.v.top = -1;
+      break;
+
+    default:
+      xerr("vfree: unexp typ");
+      break;
+    } // switch
+    free( v ); 
+  } // if v
+} // vfree
 
 void trp
 (
@@ -463,23 +473,20 @@ void evl
       case XS: // { obj }
 	{ struct tval *kvals = 0;
 	  for( int i = 0; i <= tok->u.x.top; i ++ ){
-	    struct tktok *ktok = tok->u.x.buf[ i ];
-
-	    // todo: need to dup val ? key ?
-
-	    xpush( tokeyvar( ktok->key , ktok->val ) , &kvals );
+	    struct tkeytok *ktok = tok->u.x.buf[ i ];
+	    keypush( keyvar( ktok->key , ktok->val ) , &kvals );
 	  } // for
 	  vpush( kvals, rs );
 	} break;
-
       case KS: // { obj }
 	{ struct tval *kvals = 0;
 	  for( int i = 0; i <= tok->u.k.top; i ++ ){
-	    struct tkval *kval = tok->u.k.buf[ i ];
-	    kpush( keyvar( kval->key , kval->val ) , &kvals );
+	    struct tkeyval *kval = tok->u.k.buf[ i ];
+	    keypush( keyvar( kval->key , kval->val ) , &kvals );
 	  } // for
 	  vpush( kvals, rs );
 	} break;
+
       case STR: // "c-string"
 	xerr("evl: STR not yet");
 	break;
@@ -510,40 +517,66 @@ void evl
       case KVAL: // func()
 	xerr("evl: typ not yet");
 	break;
-      case KTOK: // func( arg , ... ) or nam[ index ]
-	{ struct tval *nxargs = 0 ;
-	  struct tval *argval; if(( argval = tok->u.ktok.val )){
-	    if( argval->t != VS )
-	      xerr("evl: unexp argval typ");
-	    for( int i = 0 ; i <= argval->u.v.top ; i ++ ){
-	      evl( argval->u.v.buf[ i ] , cxs , vargs , &nxargs );
+      case KTOK: // func( v , ... ) or nam[ a-index ]
+	{ struct tval *param; // required to differ between array and function
+	  if(!( param = tok->u.ktok.val ))
+	    xerr("evl: no param");
+	  struct tval *rsparam = 0;
+	  if( param->t == AS || param->t == VS ){
+	    for( int i = 0 ; i <= param->u.v.top ; i ++ ){
+	      evl( param->u.v.buf[ i ] , cxs , vargs , &rsparam );
 	    } // for
-	  } // if argval
-	  struct tval *nxrs = 0 ;
-	  char *sigkey ; if( strcmp( sigkey = tok->u.ktok.key , "loop" ) == 0 ){
-	    struct tval *loopsig; if(( loopsig = vshift( nxargs ) )){
-	      if( loopsig->t != STR ) xerr("evl: unexp loopsig typ");
-	      int i = 0; while( 1 ){
-		trp( loopsig->u.str , cxs , nxargs , i ++ , rs , &nxrs );
-	      }
-	    } else {
-	      xerr("evl: no loopsig");
-	    } // if loopsig
-	  } else {
-	      trp( sigkey , cxs , nxargs , 0 , rs , &nxrs );
-	  } // if loop
+	  } else xerr("evl: unexp param typ");
 
-	  if( nxrs ){ // have next result ?
-	    vfree( vpop( *rs ) ); vpush( vpop( nxrs ) , rs );
-	    vfree( nxrs );
+	  char *key = tok->u.ktok.key;	 
+	  struct tval *rsnx = 0;
+	  switch( param->t ){
+	  case AS:
+	    if( key ){ // key[ elem-index ]
+	      if( strcmp( key , "_arg" ) == 0 ){ // reservd
+		if( rsparam->t != VS )
+		  xerr("evl: unexp key[ elem-index typ ]");
+		for( int i = 0; i <= rsparam->u.v.top; i ++ ){
+		  vpush( alookup( rsparam->u.v.buf[ i ] , vargs ) , &rsnx );
+		} // for
+	      } else {
+		xerr("eval: key[ elem-index ] not yet");
+	      }
+	    } else { // [ elem , ... ]
+	      xerr("eval: [ elem , ... ] not yet");
+	    } // if key
+	    break;
+	  case VS:
+	    if( key ){
+	      if( strcmp( key , "loop" ) == 0 ){
+		struct tval *loopsig; if(( loopsig = vshift( rsparam ) )){
+		  if( loopsig->t != STR )
+		    xerr("evl: unexp loopsig typ");
+		  int i = 0; while( 1 ){
+		    trp( loopsig->u.str , cxs , rsparam , i ++ , rs , &rsnx );
+		  }
+		  vfree( loopsig );
+		} else xerr("evl: no loopsig");
+	      } else {
+		trp( key , cxs , rsparam , 0 , rs , &rsnx );
+	      } // if loop
+	    } else {
+	      xerr("evl: param w/o key not yet");
+	    } // if key
+	    break;
+	  default:
+	    xerr("evl: unexp param typ");
+	  } // switch param->t
+	  if( rsnx ){ // have next result ?
+	    vfree( vpop( *rs ) ); vpush( vpop( rsnx ) , rs );
+	    vfree( rsnx );
 	  }
-	  vfree( nxargs );
-	} // nxargs closure
-	break;
+	  vfree( param ); vfree( rsparam );
+	} break; // TOK
       case NAM: // plain nam
 	if( strcmp( tok->u.str , "sys" ) == 0 ){ // rservd
 	  static struct tval *syscx = 0; if( !syscx ){ // persist in memory
-	    kpush( keyvar( "_sys" , 0 ) , &syscx ); // todo: temp placeholder ?
+	    keypush( keyvar( "_sys" , 0 ) , &syscx ); // todo: temp placeholder ?
 	  }
 	  vpush( syscx , rs );
 	} else if( strcmp( tok->u.str , "_arg" ) == 0 ){ // rservd
@@ -553,7 +586,7 @@ void evl
 	    vpush( val , rs );
 	  } else xerr("evl: nam not found");
 	} // if
-	break;
+	break; // NAM
       default:
 	xerr("evl: unexp tok typ");
 	break;
@@ -577,18 +610,19 @@ struct tval *parse( char *buf ){
       *end = 0 ;
       *x = vtok( left + 1 );
       break;
-    case ']' : // [ elem , ... ] or nam[ index ]
-    case ')' : // ( exp ) or func( arg , ... )
+    case ']' : // [ elem , ... ] or nam[ elem-index ]
+    case ')' : // ( exp ) or func( arg , ... ) ?
       { int issquar = *end == ']' ; *end = 0 ;
 	char *elem = gettok( left , issquar ? '[' : '(' );
 	char *key = trim( left );
 	int ( *mypush )() = issquar ? apush : vpush ;
-	struct tval *elems = 0; while( *elem ){
+	// using elems typ to determin between array and function ?
+	struct tval *elems = var( issquar ? AS : VS ); while( *elem ){
 	  char *right = gettok( elem , ',' );
 	  mypush( parse( elem ) , &elems );
 	  elem = right;
 	} // while
-	*x = strlen( key ) ? vtokeyvar( key , elems ) : elems ;
+	*x = strlen( key ) ? vkeytokvar( key , elems ) : elems ;
       } break;
     case '}' : // object pairs { key : val , ... }
       *end = 0 ;
@@ -601,7 +635,7 @@ struct tval *parse( char *buf ){
       for( int i = 0; toktmp && i <= toktmp->u.s.top; i ++ ){
 	left = toktmp->u.s.buf[ i ];
 	char *right = gettok ( left , ':' );
-	xpush( tokeyvar( trim( left ) , parse( right ) ), x );
+	keytokpush( keytokvar( trim( left ) , parse( right ) ), x );
       } // while
       break;
     default:
@@ -621,14 +655,14 @@ struct tval *parse( char *buf ){
   return xchain;
 } // parse
 void dmp( struct tval * );
-void kdmp( struct tkval *kval ){
+void keydmp( struct tkeyval *kval ){
   p("%s: ", kval->key );
   struct tval *v = kval->val; dmp( v && v->x ? v->x : v );
-} // kdmp
-void ktokdmp( struct tktok *ktok ){
+} // keydmp
+void keytokdmp( struct tkeytok *ktok ){
   p("%s: ", ktok->key );
   struct tval *v = ktok->val; dmp( v && v->x ? v->x : v );
-} // kdmp
+} // ktokdmp
 void dmp( struct tval *v ){
   if( v ){
     switch( v->t ){
@@ -643,42 +677,44 @@ void dmp( struct tval *v ){
       p("%s", v->u.str);
       break;
     case STRS:
+    case TOKS:
       p("[ ");
       for( int i = 0 ; i <= v->u.s.top ; i ++ ){
 	if( i ) p(", "); p("\"%s\"", v->u.s.buf[ i ] );
       }
       p(" ]");
       break;
+    case AS:
     case VS:
-      p("[ "); for( int i = 0 ; i <= v->u.v.top ; i ++ ){
-	if( i ) p(", "); {
-	  struct tval *w = v->u.v.buf[ i ];
-	  dmp( w && w->x ? w->x : w );
-	}
-      } p(" ]");
-      break;
+      { int issquar = v->t == AS;
+	p( issquar ? "[ " : "( " );
+	for( int i = 0 ; i <= v->u.v.top ; i ++ ){
+	  if( i ) p(", "); {
+	    struct tval *w = v->u.v.buf[ i ];
+	    dmp( w && w->x ? w->x : w );
+	  }
+	} p( issquar ? " ]" : " )" );
+      } break;
     case KVAL:
-      kdmp( &v->u.kval );
+      keydmp( &v->u.kval );
       break;
     case KTOK:
-      ktokdmp( &v->u.ktok );
+      keytokdmp( &v->u.ktok );
       break;
     case KS:
       p("{ "); for( int i = 0 ; i <= v->u.k.top ; i ++ ){
-	if( i ) p(", "); kdmp( v->u.k.buf[ i ] );
+	if( i ) p(", "); keydmp( v->u.k.buf[ i ] );
       } p(" }");
       break;
     case XS:
       p("{ "); for( int i = 0 ; i <= v->u.x.top ; i ++ ){
-	if( i ) p(", "); ktokdmp( v->u.x.buf[ i ] );
+	if( i ) p(", "); keytokdmp( v->u.x.buf[ i ] );
       } p(" }");
       break;
     default:
       xerr("dmp: unexp typ");
-    } // switch
-  } else {
-    p("(nul)");
-  } // if v
+    } // switch v->t
+  } else p("(nul)");
 } // dmp
 int main ( int argc, char *argv [] )
 {
@@ -692,24 +728,21 @@ int main ( int argc, char *argv [] )
     fread (buf, 1, n, f);
     buf [ n ] = 0 ; // terminatn
     fclose (f);
-  } else {
-    xerr("could not open file");
-  }
+  } else xerr("could not open file");
   
   struct tval *xchain = parse( buf );
-  p("\nxchain:"); dmp( xchain );
+  p("xchain:"); dmp( xchain ); p("\n");
 
   struct tval *argvals = 0 ; for( int i = 0 ; i < argc ; i ++ ){
-    spush( strdup( argv [ i ] ) , &argvals );
-  } // for
-  p("\nargvals:"); dmp( argvals );
+    tokpush( argv [ i ] , &argvals );
+  } p("argvals:"); dmp( argvals ); p("\n");
 
-//  struct tval *rs = 0; evl( xchain , 0 , argvals , &rs );
-//  p("\nrs:"); dmp( rs );
+  struct tval *rs = 0; evl( xchain , 0 , argvals , &rs );
+  p("rs:"); dmp( rs ); p("\n");
 
-//  vfree( rs );
+  vfree( rs );
   vfree( argvals );
   vfree( xchain );
   free( buf );
-  p("\nmain: end");
+  p("main: end\n");
 } // main
