@@ -198,7 +198,7 @@ struct tval *vdup( const struct tval *v ){
     } break;
   default:
     xerr("vdup: unexp typ");
-  } // switch
+  } // switch rt->t
   return rt;
 } // vdup
 
@@ -223,7 +223,8 @@ struct tval *vpop( struct tval *cx ){
     } else {
       return cx->u.v.buf[ cx->u.v.top -- ];
     }
-  } else xerr("vpop: nul cx");
+  } else
+    xerr("vpop: nul cx");
   return 0;
 } // vpop
 
@@ -273,13 +274,6 @@ struct tval *klookup( const char *key , const struct tval *cx ){
   } // switch cx->t
   return 0;
 } // klookup
-struct tval *alookup( const struct tval *index , const struct tval *cx ){
-  switch( cx->t ){
-  default:
-    xerr("alookup: unexp cx typ");
-  } // switch cx->t
-  return 0;
-} // alookup
 struct tval *vtop( struct tval *v ){
   switch( v->t ){
   case VS :
@@ -290,26 +284,39 @@ struct tval *vtop( struct tval *v ){
   } // switch
   return 0;
 } //vtop
-struct tval *namlookup( const struct tval *nam , const struct tval *cxs ){
+struct tval *scoplookup( const struct tval *nam , const struct tval *cxs ){
+  if( cxs->t != VS)
+    xerr("scoplookup: unexp cxs typ");
   switch( nam->t ){
   case NAM :
-    switch( cxs->t ){
-    case VS :
-      for( int i = 0 ; i <= cxs->u.v.top ; i ++ ){ // left to right ?
-	struct tval *v; if(( v = klookup( nam->u.str , cxs->u.v.buf[ i ] ) )){
-	  return vtop( v )->x ;
-	}
-      } // for
-      break;
-    default:
-      xerr("namlookup: unexp cxs typ");
-    } // switch
+    for( int i = 0 ; i <= cxs->u.v.top ; i ++ ){ // left to right ?
+      struct tval *v; if(( v = klookup( nam->u.str , cxs->u.v.buf[ i ] ) )){
+	return vtop( v )->x ;
+      }
+    } // for
     break;
   default:
-    xerr("namlookup: unexp nam typ");
+    xerr("scoplookup: unexp nam typ");
   } // switch
   return 0 ;
-} // namlookup
+} // scoplookup
+struct tval *arrlookup( const struct tval *index , const struct tval *cxs ){
+  if( cxs->t != VS)
+    xerr("arrlookup: unexp cxs typ");
+  long num; switch( index->t ){
+  case NUM :
+    num = index->u.num;
+    if( num < 0 )
+      xerr("arrlookup: negative index");
+    if( num > cxs->u.v.top )
+      xerr("arrlookup: index too big");
+    return cxs->u.v.buf[ num ];
+    break;
+  default:
+    xerr("arrlookup: unexp index typ");
+  } // switch
+  return 0 ;
+} // arrlookup
 
 void vfree( struct tval *v ){
   if( v ){
@@ -474,7 +481,9 @@ void evl
 	{ struct tval *kvals = 0;
 	  for( int i = 0; i <= tok->u.x.top; i ++ ){
 	    struct tkeytok *ktok = tok->u.x.buf[ i ];
-	    keypush( keyvar( ktok->key , ktok->val ) , &kvals );
+
+	    // todo: dup val
+	    keypush( keyvar( ktok->key , vdup( ktok->val ) ) , &kvals );
 	  } // for
 	  vpush( kvals, rs );
 	} break;
@@ -491,6 +500,9 @@ void evl
 	xerr("evl: STR not yet");
 	break;
       case TOK: // "c-string" ?
+	// todo: ought do lookup, like nam ? - _arg[0].fmt base on context
+	// todo: ought have any "tok" in evl - no ?
+	// todo: do custom typ - yes ?
 	{ struct tval *v;
 	  if( strcmp( tok->u.str , "_arg" ) == 0 ){ // reservd
 	    v = vdup( vargs ); // malloc
@@ -536,8 +548,8 @@ void evl
 	      if( strcmp( key , "_arg" ) == 0 ){ // reservd
 		if( rsparam->t != VS )
 		  xerr("evl: unexp key[ elem-index typ ]");
-		for( int i = 0; i <= rsparam->u.v.top; i ++ ){
-		  vpush( alookup( rsparam->u.v.buf[ i ] , vargs ) , &rsnx );
+		for( int i = 0; i <= rsparam->u.v.top; i ++ ){ // do lookups
+		  vpush( arrlookup( rsparam->u.v.buf[ i ] , vargs ) , &rsnx );
 		} // for
 	      } else {
 		xerr("eval: key[ elem-index ] not yet");
@@ -568,11 +580,13 @@ void evl
 	    xerr("evl: unexp param typ");
 	  } // switch param->t
 	  if( rsnx ){ // have next result ?
-	    vfree( vpop( *rs ) ); vpush( vpop( rsnx ) , rs );
+	    if( *rs ) // freen previous result now ?
+	      vfree( vpop( *rs ) );
+	    vpush( vpop( rsnx ) , rs );
 	    vfree( rsnx );
 	  }
 	  vfree( param ); vfree( rsparam );
-	} break; // TOK
+	} break; // KTOK
       case NAM: // plain nam
 	if( strcmp( tok->u.str , "sys" ) == 0 ){ // rservd
 	  static struct tval *syscx = 0; if( !syscx ){ // persist in memory
@@ -582,7 +596,7 @@ void evl
 	} else if( strcmp( tok->u.str , "_arg" ) == 0 ){ // rservd
 	  vpush( vargs , rs );
 	} else {
-	  struct tval *val ; if(( val = namlookup( tok , cxs ) )){
+	  struct tval *val ; if(( val = scoplookup( tok , cxs ) )){
 	    vpush( val , rs );
 	  } else xerr("evl: nam not found");
 	} // if
