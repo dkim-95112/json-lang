@@ -16,9 +16,7 @@ char *trim( char *str ){
   while( *str == ' ' || *str == '\t' || *str == '\n' ) str ++ ;
   if( *str == 0 ) return str; // all spaces ?
   char *end = str + strlen( str ) - 1; // trim trailn space
-  while ( str < end &&
-	  ( *end == ' ' || *end == '\t' || *end == '\n' )
-	  ) end--;
+  while( str < end && ( *end == ' ' || *end == '\t' || *end == '\n' ) ) end--;
   *( end + 1 ) = 0; // terminatn
   return str;
 } // trim
@@ -485,7 +483,7 @@ void dmp( struct tval *v ){
 
 struct tval *evl
 ( const struct tval *tok ,
-  const struct tval *vargs ,
+  const struct tval *pargs ,
   struct tval *cxs
   ){
   if( tok == 0 ) return 0;
@@ -499,30 +497,28 @@ struct tval *evl
     if( *tok->u.str == '"' ){ // quotd "c-string" literal
       rt = vstr( escap( tok->u.str ) );
     } else { // plain symbol
-      rt = symlookup( tok , vargs , cxs );
+      rt = symlookup( tok , pargs , cxs );
     }
     break;
 
   case OBJ: // { obj }
-    for( int i = 0; i <= tok->u.v.top; i ++ ){
-      evl( tok->u.v.buf[ i ] , vargs , cxs );
-    } // for
+    rt = vdup( tok );
     break;
 
   case ARG: // ( arg )
     for( int i = 0; i <= tok->u.v.top; i ++ ){
-      obpush( evl( tok->u.v.buf[ i ] , vargs , cxs ) , &rt );
+      obpush( evl( tok->u.v.buf[ i ] , pargs , cxs ) , &rt );
     } // for
     break;
 
   case ARR : // [ array ]
     for( int i = 0 ; i <= tok->u.v.top ; i ++ ){
-      arpush( evl( tok->u.v.buf[ i ] , vargs , cxs ) , &rt );
+      arpush( evl( tok->u.v.buf[ i ] , pargs , cxs ) , &rt );
     } // for
     break;
 
   case KEYFN:
-    rt = tok->u.f.fn( vargs , cxs );
+    rt = tok->u.f.fn( pargs , cxs );
     break;
 
   case KEYVAL:
@@ -530,11 +526,39 @@ struct tval *evl
 /*       struct tval *body = tok->u.kval.val->u.v.buf[1]; */
 /*       for( int i = 0; i <= body->u.v.top; i ++ ){ */
 /* 	// todo: do args substitution ? */
-/* 	result = evl( body->u.v.buf[ i ] , vargs , cxs ); */
+/* 	result = evl( body->u.v.buf[ i ] , pargs , cxs ); */
 /*       } */
     } else {
-      rt = vdup( tok );
-    }
+      struct tval *myargs = 0; // eval args
+      for( int i = 0 ; i <= tok->u.k.val->u.v.top ; i ++ ){
+	argpush( evl( tok->u.k.val->u.v.buf[ i ] , pargs , cxs ) , &myargs );
+      } // for
+      struct tval *loopsig = 0;
+      if( !strcmp( tok->u.k.key , "loop" ) ){ // reservd
+	if(( loopsig = shift( myargs ) )){
+	} else
+	  xerr("evl: loop: no sig ");
+      } // if loop
+      struct tval *evob = symlookup( loopsig ? loopsig : tok , pargs , cxs );
+      while( 1 ){
+	rt = evl( evob , myargs , cxs );
+	if( !loopsig ){
+	  break;
+	} else {
+	  if( rt && ( rt->flg & FBRK ) ){
+	    rt->flg &= ~FBRK;
+	    break;
+	  } // if FBRK
+	} // if loopsig
+	if( rt ){ // drop last ?
+	  if( last_rt ){
+	    vfree( shift( cxs ) ); last_rt = 0;
+	  } // if last_rt
+	  unshift( last_rt = rt , &cxs ); rt = 0;
+	} // if rt
+      } // while
+      vfree( loopsig );
+    } // if fn definition
     break;
 
   default:
@@ -548,9 +572,8 @@ struct tval *evl
 /*       struct tval *parms; if(( parms = tok->u.kval.val )){ */
 /* 	if(!( parms->t == AS || parms->t == VS )) xerr("evl: KVAL unexp parms typ"); */
 /* 	mypush = parms->t == AS ? apush : vpush; */
-/* 	for( int i = 0 ; i <= parms->u.v.top ; i ++ ){ // eval params */
-/* 	  mypush( evl( parms->u.v.buf[ i ] , vargs , cxs ) , &parms_result ); */
-/* 	} // for */
+
+
 /*       } // if parms */
 /*       if( parms_result && parms_result->t == AS ){ // sym [ indexes ] - do lookups */
 /* 	const struct tval *myobj = symlookup( tok , vargs , cxs ); */
@@ -558,29 +581,8 @@ struct tval *evl
 /* 	  mypush( vdup( arlookup( parms_result->u.v.buf[ i ] , myobj ) ) , &result ); */
 /* 	} // for */
 /*       } else { // function call */
-/* 	const struct tval *evlob = 0 , *loopob = 0; */
-/* 	if( strcmp( tok->u.kval.key , "loop" ) == 0 ){ // reservd */
-/* 	  struct tval *loopsig; if(( loopsig = shift( parms_result ) )){ */
-/* 	    if(!( loopob = symlookup( loopsig , vargs , cxs ) )){ */
-/* 	      xerr("evl: no loopob"); */
-/* 	    } vfree( loopsig ); loopsig = 0; */
-/* 	  } else { */
-/* 	    xerr("evl: loop: no sig "); */
-/* 	  } // if loopsig */
-/* 	} else { */
-/* 	  if(!( evlob = symlookup( tok , vargs , cxs ) )){ */
-/* 	    xerr("evl: no evlob"); */
-/* 	  } */
-/* 	} // loop */
-/* 	while( 1 ){ */
-/* 	  result = evl( loopob ? loopob : evlob , parms_result , cxs ); */
-/* 	  if( !loopob || ( result && result->flg & FBRK ) ){ */
-/* 	    break; */
-/* 	  } // if break */
-/* 	  if( result ){ // drop last ? */
-/* 	    vfree( result ); result = 0; */
-/* 	  } */
-/* 	} // while */
+
+
 /*       } // if array lookup */
 /*       vfree( parms_result ); */
 /*     } break; // case KVAL */
@@ -600,7 +602,7 @@ struct tval *evl
 /*     shift( cxs ); */
 /*   } */
 /*   return last_rt; */
-    return 0;
+    return rt;
 } // evl
 
 struct tval *_parse( char *lk ){ // single link
@@ -689,20 +691,31 @@ int main( int argc, char *argv [] ){
     fclose (f);
   } else xerr("could not open file");
 
-  struct tval *vchain = fnparse( buf );
-  p("vchain:"); dmp( vchain ); p("\n");
-
   struct tval *args = 0 ; for( int i = 0 ; i < argc ; i ++ ){
     // todo: qout strings
     argpush( vstr( argv [ i ] ) , &args );
   } p("args:"); dmp( args ); p("\n");
 
-  struct tval *rs = evl( vchain , args , 0 );
-  p("rs:"); dmp( rs ); p("\n");
+  struct tval *body = fnparse( buf );
+  p("body:"); dmp( body ); p("\n");
 
-  vfree( rs );
+  struct tval *rt = 0, *last_rt = 0, *cxs = 0;
+  for( int i = 0; i <= body->u.v.top; i ++ ){
+    p("cxs:"); dmp( cxs ); p("\n");
+    rt = evl( body->u.v.buf[ i ] , args , cxs );
+    p("rt:"); dmp( rt ); p("\n");
+    if( rt ){
+      if( last_rt ){
+	vfree( shift( cxs ) ); last_rt = 0;
+      } // if
+      unshift( ( last_rt = rt ) , &cxs ); rt = 0;
+    } // if
+  } // for
+
+  vfree( rt );
+  vfree( cxs );
+  vfree( body );
   vfree( args );
-  vfree( vchain );
   free( buf );
   p("main: end\n");
 } // main
