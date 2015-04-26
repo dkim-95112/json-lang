@@ -489,111 +489,119 @@ struct tval *evl
   struct tval *cxs
   ){
   if( tok == 0 ) return 0;
-/*   if( tok->t != VS ) */
-/*     xerr("evl: unexp typ"); */
-/*   for( int i = 0; i <= vchain->u.v.top; i ++ ){ */
+  struct tval *rt = 0 , *last_rt = 0;
+  switch( tok->t ){
+  case NUM: // 123
+    rt = vdup( tok );
+    break;
 
-/*   } // for */
+  case STR:
+    if( *tok->u.str == '"' ){ // quotd "c-string" literal
+      rt = vstr( escap( tok->u.str ) );
+    } else { // plain symbol
+      rt = symlookup( tok , vargs , cxs );
+    }
+    break;
 
+  case OBJ: // { obj }
+    for( int i = 0; i <= tok->u.v.top; i ++ ){
+      evl( tok->u.v.buf[ i ] , vargs , cxs );
+    } // for
+    break;
 
-/*   struct tval *result = 0 , *last_result = 0; */
-/*   if( vchain->t == KEYFN ){ */
-/*     struct tval *val = vchain->u.k.val; */
-/*     if( val->t == FN ){ */
-/*       result = val->u.fn( vargs , cxs ); */
-/*     } else { */
-/*       xerr("evl: unexp keyval val typ"); */
-/*     } */
-/*   } else { */
-/*     if( vchain->t != VS ) */
-/*       xerr("evl: unexp typ"); */
-/*     for( int i = 0; i <= vchain->u.v.top; i ++ ){ */
-/*       struct tval *tok; switch( ( tok = vchain->u.v.buf[ i ] )->t ){ */
-/*       case NUM: // 123 */
-/*       case VS: // { obj } */
-/* 	result = vdup( tok ); */
-/* 	break; */
-/*       case STR: // quotd "c-string" literal */
-/* 	if( *tok->u.str == '"' ){ */
-/* 	  result = vstr( escap( tok->u.str ) ); */
-/* 	} else { */
-/* 	  result = symlookup( tok , vargs , cxs ); */
-/* 	} */
-/* 	break; */
-/*       case AS : // [ array ] */
-/* 	for( int i = 0 ; i <= tok->u.v.top ; i ++ ){ */
-/* 	  apush( evl( tok->u.v.buf[ i ] , vargs , cxs ) , &result ); */
+  case ARG: // ( arg )
+    for( int i = 0; i <= tok->u.v.top; i ++ ){
+      obpush( evl( tok->u.v.buf[ i ] , vargs , cxs ) , &rt );
+    } // for
+    break;
+
+  case ARR : // [ array ]
+    for( int i = 0 ; i <= tok->u.v.top ; i ++ ){
+      arpush( evl( tok->u.v.buf[ i ] , vargs , cxs ) , &rt );
+    } // for
+    break;
+
+  case KEYFN:
+    rt = tok->u.f.fn( vargs , cxs );
+    break;
+
+  case KEYVAL:
+    if( strcmp( tok->u.k.key , "fn" ) == 0 ){ // anonymous function ?
+/*       struct tval *body = tok->u.kval.val->u.v.buf[1]; */
+/*       for( int i = 0; i <= body->u.v.top; i ++ ){ */
+/* 	// todo: do args substitution ? */
+/* 	result = evl( body->u.v.buf[ i ] , vargs , cxs ); */
+/*       } */
+    } else {
+      rt = vdup( tok );
+    }
+    break;
+
+  default:
+    xerr("evl: unexp tok typ");
+    break;
+  } // switch tok->t
+
+/*       // calln func( v , ... ) or sym[ a-index ] */
+/*       int ( *mypush )( struct tval * , struct tval ** ) = 0; */
+/*       struct tval *parms_result = 0; */
+/*       struct tval *parms; if(( parms = tok->u.kval.val )){ */
+/* 	if(!( parms->t == AS || parms->t == VS )) xerr("evl: KVAL unexp parms typ"); */
+/* 	mypush = parms->t == AS ? apush : vpush; */
+/* 	for( int i = 0 ; i <= parms->u.v.top ; i ++ ){ // eval params */
+/* 	  mypush( evl( parms->u.v.buf[ i ] , vargs , cxs ) , &parms_result ); */
 /* 	} // for */
-/* 	break; */
-/*       case KEYVAL: */
-/* 	if( strcmp( tok->u.kval.key , "fn" ) == 0 ){ */
-/* 	  // anonymous function */
-/* 	  struct tval *body = tok->u.kval.val->u.v.buf[1]; */
-/* 	  for( int i = 0; i <= body->u.v.top; i ++ ){ */
-/* 	    // todo: do args substitution ? */
-/* 	    result = evl( body->u.v.buf[ i ] , vargs , cxs ); */
-/* 	  } */
+/*       } // if parms */
+/*       if( parms_result && parms_result->t == AS ){ // sym [ indexes ] - do lookups */
+/* 	const struct tval *myobj = symlookup( tok , vargs , cxs ); */
+/* 	for( int i = 0; i <= parms_result->u.v.top; i ++ ){ // do lookups */
+/* 	  mypush( vdup( arlookup( parms_result->u.v.buf[ i ] , myobj ) ) , &result ); */
+/* 	} // for */
+/*       } else { // function call */
+/* 	const struct tval *evlob = 0 , *loopob = 0; */
+/* 	if( strcmp( tok->u.kval.key , "loop" ) == 0 ){ // reservd */
+/* 	  struct tval *loopsig; if(( loopsig = shift( parms_result ) )){ */
+/* 	    if(!( loopob = symlookup( loopsig , vargs , cxs ) )){ */
+/* 	      xerr("evl: no loopob"); */
+/* 	    } vfree( loopsig ); loopsig = 0; */
+/* 	  } else { */
+/* 	    xerr("evl: loop: no sig "); */
+/* 	  } // if loopsig */
 /* 	} else { */
-/* 	  // calln func( v , ... ) or sym[ a-index ] */
-/* 	  int ( *mypush )( struct tval * , struct tval ** ) = 0; */
-/* 	  struct tval *parms_result = 0; */
-/* 	  struct tval *parms; if(( parms = tok->u.kval.val )){ */
-/* 	    if(!( parms->t == AS || parms->t == VS )) xerr("evl: KVAL unexp parms typ"); */
-/* 	    mypush = parms->t == AS ? apush : vpush; */
-/* 	    for( int i = 0 ; i <= parms->u.v.top ; i ++ ){ // eval params */
-/* 	      mypush( evl( parms->u.v.buf[ i ] , vargs , cxs ) , &parms_result ); */
-/* 	    } // for */
-/* 	  } // if parms */
-/* 	  if( parms_result && parms_result->t == AS ){ // sym [ indexes ] - do lookups */
-/* 	    const struct tval *myobj = symlookup( tok , vargs , cxs ); */
-/* 	    for( int i = 0; i <= parms_result->u.v.top; i ++ ){ // do lookups */
-/* 	      mypush( vdup( arlookup( parms_result->u.v.buf[ i ] , myobj ) ) , &result ); */
-/* 	    } // for */
-/* 	  } else { // function call */
-/* 	    const struct tval *evlob = 0 , *loopob = 0; */
-/* 	    if( strcmp( tok->u.kval.key , "loop" ) == 0 ){ // reservd */
-/* 	      struct tval *loopsig; if(( loopsig = shift( parms_result ) )){ */
-/* 		if(!( loopob = symlookup( loopsig , vargs , cxs ) )){ */
-/* 		  xerr("evl: no loopob"); */
-/* 		} vfree( loopsig ); loopsig = 0; */
-/* 	      } else { */
-/* 		xerr("evl: loop: no sig "); */
-/* 	      } // if loopsig */
-/* 	    } else { */
-/* 	      if(!( evlob = symlookup( tok , vargs , cxs ) )){ */
-/* 		xerr("evl: no evlob"); */
-/* 	      } */
-/* 	    } // loop */
-/* 	    while( 1 ){ */
-/* 	      result = evl( loopob ? loopob : evlob , parms_result , cxs ); */
-/* 	      if( !loopob || ( result && result->flg & FBRK ) ){ */
-/* 		break; */
-/* 	      } // if break */
-/* 	      if( result ){ // drop last ? */
-/* 		vfree( result ); result = 0; */
-/* 	      } */
-/* 	    } // while */
-/* 	  } // if array lookup */
-/* 	  vfree( parms_result ); */
-/* 	} break; // case KVAL */
-/*       default: */
-/* 	xerr("evl: unexp tok typ"); */
-/* 	break; */
-/*       } // switch tok->t */
-/*       if( result ){ // have result ? */
-/* 	if( last_result ){ // drop last in context ? */
-/* 	  vfree( shift( cxs ) ); last_result = 0; */
+/* 	  if(!( evlob = symlookup( tok , vargs , cxs ) )){ */
+/* 	    xerr("evl: no evlob"); */
+/* 	  } */
+/* 	} // loop */
+/* 	while( 1 ){ */
+/* 	  result = evl( loopob ? loopob : evlob , parms_result , cxs ); */
+/* 	  if( !loopob || ( result && result->flg & FBRK ) ){ */
+/* 	    break; */
+/* 	  } // if break */
+/* 	  if( result ){ // drop last ? */
+/* 	    vfree( result ); result = 0; */
+/* 	  } */
+/* 	} // while */
+/*       } // if array lookup */
+/*       vfree( parms_result ); */
+/*     } break; // case KVAL */
+
+
+/*       if( rt ){ // have result ? */
+/* 	if( last_rt ){ // drop last in context ? */
+/* 	  vfree( shift( cxs ) ); last_rt = 0; */
 /* 	} */
 /* 	// last in chain is new context */
-/* 	unshift( last_result = result , &cxs ); result = 0; */
+/* 	unshift( last_rt = rt , &cxs ); rt = 0; */
 /*       } // if result */
 /*     } // for vchain */
 /*   } // if vchain->t KVAL */
-/*   if( last_result ){ // remove last result from context ? */
+
+/*   if( last_rt ){ // remove last result from context ? */
 /*     shift( cxs ); */
-/*   } return last_result; */
-  return 0;
-}// evl
+/*   } */
+/*   return last_rt; */
+    return 0;
+} // evl
 
 struct tval *_parse( char *lk ){ // single link
   struct tval *rt = 0;
@@ -685,6 +693,7 @@ int main( int argc, char *argv [] ){
   p("vchain:"); dmp( vchain ); p("\n");
 
   struct tval *args = 0 ; for( int i = 0 ; i < argc ; i ++ ){
+    // todo: qout strings
     argpush( vstr( argv [ i ] ) , &args );
   } p("args:"); dmp( args ); p("\n");
 
