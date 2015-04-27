@@ -39,7 +39,7 @@ char *gettok( char *buf , char delim ){
     } pc ++;
   } return pc;
 } // gettok
-int cescap ( int c ){
+int cescap( int c ){
   switch ( c ){
   case 'a' : return 7 ;
   case 'b' : return 8 ;
@@ -81,30 +81,29 @@ struct stac {
   char **buf;
 };
 int push( char *val , struct stac **cx ){
-  if( !*cx ){
+  if( !*cx )
     (*cx = xcalloc( 1 , sizeof( struct stac ) ))->top = -1;
-  }
   if( ( ++ (*cx)->top ) * sizeof( val ) >= (*cx)->sz ){
     (*cx)->buf =
       realloc( (*cx)->buf ,
 	       (*cx)->sz += STACPAG * sizeof( val ) );
   } (*cx)->buf[ (*cx)->top ] = val;	
-  return (*cx)->top ; 
+  return (*cx)->top; 
 } // push
 
 typedef struct tval *tfn( const struct tval * , struct tval *);
 struct tval {
-  //  struct tval *x ; // child parse tree
   unsigned long flg;
 #define FBRK 1
+#define FCTX 2
   enum val_t {
-    // TOKs point to file buf, so no string malloc, for parse
     NUL = 0,
     NUM, // long
     STR, // doubl quotd "string" literal or plain sym, freed
     KEYFN, // pointer to fn
     KEYVAL, // { key : val } both key & val freed
-    ARG, ARR , OBJ // ( args ) / [ array ] / { obj }
+    // [ array ] / dot . chain . ... / ( args ) / stmt ; ... / { obj }
+    ARR , DOT , ARG , SEMI , OBJ
   } t ;
   union {
     long num ; // NUM
@@ -115,8 +114,8 @@ struct tval {
   } u ;
 }; // tval
 struct tval *evl( const struct tval *, const struct tval *, struct tval * );
-struct tval *fnparse( char * );
-struct tval *parse( char * );
+struct tval *semiparse( char * );
+struct tval *dotparse( char * );
 
 struct tval *var( int t ){
   struct tval *rt;
@@ -126,8 +125,10 @@ struct tval *var( int t ){
   case KEYFN:
   case KEYVAL:
     break;
-  case ARG:
   case ARR:
+  case DOT:
+  case ARG:
+  case SEMI:
   case OBJ:
     rt->u.v.top = -1;
     break;
@@ -169,13 +170,19 @@ int _push( enum val_t typ , struct tval *val , struct tval **cx ){
   } (*cx)->u.v.buf[ (*cx)->u.v.top ] = val;	
   return (*cx)->u.v.top ; 
 } // _push
-int argpush( struct tval *val , struct tval **cx ){ // ( arg )
-  return _push( ARG , val , cx );
-} // argpush
-int arpush( struct tval *val , struct tval **cx ){ // [ arr ]
+int arpush( struct tval *val , struct tval **cx ){ // [ e1 , e2 , ... ]
   return _push( ARR , val , cx );
 } // arpush
-int obpush( struct tval *val , struct tval **cx ){ // { obj }
+int dotpush( struct tval *val , struct tval **cx ){ // dot . chain . ...
+  return _push( DOT , val , cx );
+} // dotpush
+int argpush( struct tval *val , struct tval **cx ){ // ( a1 , a2 , ... )
+  return _push( ARG , val , cx );
+} // argpush
+int semipush( struct tval *val , struct tval **cx ){ // s1 ; s2 ; ...
+  return _push( SEMI , val , cx );
+} // obpush
+int obpush( struct tval *val , struct tval **cx ){ // { k1 : v1 , k2 : v2 , ... }
   return _push( OBJ , val , cx );
 } // obpush
 struct tval *vdup( const struct tval *v ){
@@ -195,7 +202,7 @@ struct tval *vdup( const struct tval *v ){
       // val is freed, so malloc here ?
       rt = keyval( v->u.k.key , vdup( v->u.k.val ) );
       break;
-    case ARG: case ARR: case OBJ:
+    case ARR: case DOT: case ARG: case SEMI: case OBJ:
       for( int i = 0; i <= v->u.v.top; i ++ ){
 	_push( v->t , vdup( v->u.v.buf[ i ] ) , &rt );
       } break;
@@ -224,9 +231,11 @@ void vfree( struct tval *v ){
     v->u.k.key = 0;
     v->u.k.val = 0;
     break;
-  case ARG: // ( paren )
-  case ARR: // [ array ]
-  case OBJ: // { obj }
+  case ARR: // array [ e1 , e2 , ... ]
+  case ARG: // function ( arg1 , arg2 , ... )
+  case DOT: // dot . chain . ...
+  case OBJ: // object { key1 : val1 , key2 : val2 , ... }
+  case SEMI: // stmt1 ; stmt2 ; ...
     for( int i = 0; i <= v->u.v.top; i ++ ){
       vfree( v->u.v.buf[ i ] );
       v->u.v.buf[ i ] = 0;
@@ -271,7 +280,7 @@ int unshift( struct tval *val , struct tval **cx ){
 struct tval *shift( struct tval *cx ){
   if( !cx )
     xerr("shift: nul cx");
-  if( cx->t != OBJ )
+  if(!( cx->t == OBJ || cx->t == ARG ))
     xerr("shift: unexp typ");
   if( cx->u.v.top < 0 ){
     p("shift: empty\n");
@@ -462,18 +471,26 @@ void dmp( struct tval *v ){
       p("%s", v->u.str);
       break;
     case ARR:
+    case DOT:
     case ARG:
+    case SEMI:
     case OBJ:
-      p( "%c " , v->t == OBJ ? '{' : v->t == ARG ? '(' : '[' );
+      p("%s", v->t == ARR ? "[ " : v->t == ARG ? "( " : v->t == OBJ ? "{ " : "" );
       for( int i = 0 ; i <= v->u.v.top ; i ++ ){
-	if( i ) p(", ");
+	if( i ) p("%s", v->t == DOT ? "." : v->t == SEMI ? "; " : ", " );
 	dmp( v->u.v.buf[ i ] );
       }
-      p( " %c" , v->t == OBJ ? '}' : v->t == ARG ? ')' : ']' );
+      p("%s", v->t == ARR ? " ]" : v->t == ARG ? " )" : v->t == OBJ ? " }" : "" );
       break;
     case KEYVAL:
-      p( "%s: ", v->u.k.key );
-      dmp( v->u.k.val );
+      if( !strcmp( v->u.k.key , "fn" ) ){
+	p( "%s{ ", v->u.k.key );
+	dmp( v->u.k.val );
+	p( " }");
+      } else {
+	p( "%s: ", v->u.k.key );
+	dmp( v->u.k.val );
+      }
       break;
     default:
       xerr("dmp: unexp typ");
@@ -490,30 +507,46 @@ struct tval *evl
   struct tval *rt = 0 , *last_rt = 0;
   switch( tok->t ){
   case NUM: // 123
-    rt = vdup( tok );
-    break;
-
-  case STR:
-    if( *tok->u.str == '"' ){ // quotd "c-string" literal
-      rt = vstr( escap( tok->u.str ) );
-    } else { // plain symbol
-      rt = symlookup( tok , pargs , cxs );
-    }
-    break;
-
   case OBJ: // { obj }
     rt = vdup( tok );
     break;
 
-  case ARG: // ( arg )
+  case STR:
+    if( *tok->u.str == '"' ){ // quotd "string" literal ?
+      rt = vstr( escap( tok->u.str ) );
+    } else { // plain unquotd symbol
+      rt = symlookup( tok , pargs , cxs );
+    }
+    break;
+
+  case DOT: // arg1 . arg2 . ...
+    // reduce to last result, chain context
     for( int i = 0; i <= tok->u.v.top; i ++ ){
-      obpush( evl( tok->u.v.buf[ i ] , pargs , cxs ) , &rt );
+      if(( rt = evl( tok->u.v.buf[ i ] , pargs , cxs ) )) // result ?
+	if( last_rt ){
+	  vfree( shift( cxs ) ); last_rt = 0;
+	}
+      unshift( last_rt = rt , &cxs ); rt = 0;
+    } // for
+    shift( cxs ); rt = last_rt;
+    break;
+
+  case SEMI: // stmt1 ; stmt2 ; ...
+    // reduce to last result, separate statements (don't chain)
+    for( int i = 0; i <= tok->u.v.top; i ++ ){
+      if( rt ){
+	vfree( rt ); rt = 0; // dropn previous
+      } // if rt
+      rt = evl( tok->u.v.buf[ i ] , pargs , cxs );
     } // for
     break;
 
   case ARR : // [ array ]
+    // map input array to output array
     for( int i = 0 ; i <= tok->u.v.top ; i ++ ){
-      arpush( evl( tok->u.v.buf[ i ] , pargs , cxs ) , &rt );
+      struct tval *el; if(( el = evl( tok->u.v.buf[ i ] , pargs , cxs ) )){
+	arpush( el , &rt );
+      } // if el
     } // for
     break;
 
@@ -523,11 +556,9 @@ struct tval *evl
 
   case KEYVAL:
     if( strcmp( tok->u.k.key , "fn" ) == 0 ){ // anonymous function ?
-/*       struct tval *body = tok->u.kval.val->u.v.buf[1]; */
-/*       for( int i = 0; i <= body->u.v.top; i ++ ){ */
-/* 	// todo: do args substitution ? */
-/* 	result = evl( body->u.v.buf[ i ] , pargs , cxs ); */
-/*       } */
+      for( int i = 0; i <= tok->u.k.val->u.v.top; i ++ ){
+	rt = evl( tok->u.k.val->u.v.buf[ i ] , pargs , cxs );
+      }
     } else {
       struct tval *myargs = 0; // eval args
       for( int i = 0 ; i <= tok->u.k.val->u.v.top ; i ++ ){
@@ -553,10 +584,9 @@ struct tval *evl
 	if( rt ){ // drop last ?
 	  if( last_rt ){
 	    vfree( shift( cxs ) ); last_rt = 0;
-	  } // if last_rt
-	  unshift( last_rt = rt , &cxs ); rt = 0;
+	  } unshift( last_rt = rt , &cxs ); rt = 0;
 	} // if rt
-      } // while
+      } shift( cxs ); rt = last_rt;
       vfree( loopsig );
     } // if fn definition
     break;
@@ -588,14 +618,6 @@ struct tval *evl
 /*     } break; // case KVAL */
 
 
-/*       if( rt ){ // have result ? */
-/* 	if( last_rt ){ // drop last in context ? */
-/* 	  vfree( shift( cxs ) ); last_rt = 0; */
-/* 	} */
-/* 	// last in chain is new context */
-/* 	unshift( last_rt = rt , &cxs ); rt = 0; */
-/*       } // if result */
-/*     } // for vchain */
 /*   } // if vchain->t KVAL */
 
 /*   if( last_rt ){ // remove last result from context ? */
@@ -605,78 +627,78 @@ struct tval *evl
     return rt;
 } // evl
 
-struct tval *_parse( char *lk ){ // single link
+struct tval *_parse( char *hed ){ // single element
   struct tval *rt = 0;
-  lk = trim( lk );
-  char *end; switch( *( end = lk + strlen( lk ) - 1 ) ){
-  case '"' : // "c-string" literal
-    rt = vstr( lk );
+  hed = trim( hed );
+  char *end; switch( *( end = hed + strlen( hed ) - 1 ) ){
+  case '"' : // "string" literal
+    rt = vstr( hed );
     break;
-  case ']' : // [ el , ... ] or sym[ el , ... ]
+  case ']' : // array [ e1 , e2 , ... ]
     { *end = 0 ;
-      char *el = trim( gettok( lk , '[' ) );
-      struct tval *lv = 0; while( *el ){
-	char *right = gettok( el, ',' );
-	arpush( parse( el ) , &lv );
-	el = trim( right );
+      char *bod = trim( gettok( hed , '[' ) );
+      struct tval *elm = 0; while( *bod ){
+	char *tal = gettok( bod, ',' );
+	arpush( dotparse( bod ) , &elm );
+	bod = trim( tal );
       } // while
-      lk = trim( lk );
-      rt = *lk ? keyval( lk , lv ) : lv;
+      hed = trim( hed );
+      rt = *hed ? keyval( hed , elm ) : elm;
     } break;
-  case ')' : // ( arg ) or sym( arg , ... ) ?
+  case ')' : //  function ( a1 , a2 , ... )
     { *end = 0 ;
-      char *el = trim( gettok( lk , '(' ) );
-      struct tval *lv = 0; while( *el ){
-	char *right = gettok( el, ',' );
-	argpush( parse( el ) , &lv );
-	el = trim( right );
-      } // while el
-      lk = trim( lk );
-      rt = *lk ? keyval( lk , lv ) : lv;
+      char *bod = trim( gettok( hed , '(' ) );
+      struct tval *elm = 0; while( *bod ){
+	char *tal = gettok( bod, ',' );
+	argpush( dotparse( bod ) , &elm );
+	bod = trim( tal );
+      } // while hed
+      hed = trim( hed );
+      rt = *hed ? keyval( hed , elm ) : elm;
     } break;
-  case '}' : // "function{ body }" or object "{ key : val , ... }"
-    { *end = 0 ;
-      char *el = trim( gettok( lk , '{' ) );
-      if( strcmp( lk , "fn" ) == 0 ){
-	rt = keyval( lk , fnparse( el ) );
-      } else {
-	while( *el ){
-	  char *right = gettok( el, ',' );
-	  char *val = trim( gettok ( el , ':' ) );
-	  el = trim( el );
-	  obpush( *el ? keyval( el , parse( val ) ) : parse( val ) , &rt );
-	  el = trim( right );
-	} // while el
-      } // if function
-    } break;
+  case '}' : // object { k1 : v1 , k2 : v2 , ... }
+    *end = 0 ;
+    char *bod = gettok( hed , '{' );
+    hed = trim( hed );
+    if( strcmp( hed , "fn" ) == 0 ){
+      rt = keyval( hed , semiparse( bod ) );
+    } else {
+      struct tval *elm = 0; while( *bod ){
+	char *tal = gettok( bod, ',' );
+	char *val = gettok( bod, ':' );
+	bod = trim( bod );
+	obpush( *bod ? keyval( bod , dotparse( val ) ) : dotparse( val ) , &elm );
+	bod = trim( tal );
+      } // while hed
+      rt = *hed ? keyval( hed , elm ) : elm;
+    } // if function
+    break;
   default:
     if( *end >= '!' && *end <= '~' ){
-      if( *lk >= '0' && *lk <= '9' ){ // num
-	rt = vnum( strtol( lk , 0 , strncasecmp( lk , "0x" , 2 ) ? 10 : 16 ) );
+      if( *hed >= '0' && *hed <= '9' ){ // num
+	rt = vnum( strtol( hed , 0 , strncasecmp( hed , "0x" , 2 ) ? 10 : 16 ) );
       } else { // plain sym
-	rt = vstr( lk );
+	rt = vstr( hed );
       } // if num
     } else {
-      xerr("parse: not printable");
+      xerr("_parse: not printable");
     } break;
   } return rt;
 } // _parse
-struct tval *parse( char *chain ){ // dot chain
-  struct tval *rt = 0; while ( *chain ){
-    char *right = gettok ( chain , '.' );
-    argpush( _parse( chain ) , &rt );
-    chain = trim( right );
+struct tval *dotparse( char *hed ){
+  struct tval *rt = 0; while ( *hed ){
+    char *tal = gettok ( hed , '.' ); // split on dot '.'
+    dotpush( _parse( hed ) , &rt ); // statement - dot chain
+    hed = trim( tal );
   } return rt;
-} // parse
-struct tval *fnparse
-( char *body // without brac '{}'
-  ){
-  struct tval *rt = 0; while( *body ){
-    char *right = gettok( body , ';' ); // split on semi ';'
-    obpush( parse( body ) , &rt );
-    body = trim( right );
+} // dotparse
+struct tval *semiparse( char *hed ){ // without brac '{}'
+  struct tval *rt = 0; while( *hed ){
+    char *tal = gettok( hed , ';' ); // split on semi ';'
+    semipush( dotparse( hed ) , &rt );
+    hed = trim( tal );
   } return rt;
-} // fnparse
+} // semiparse
 
 int main( int argc, char *argv [] ){
   if (argc < 2) xerr("file not specified");
@@ -696,7 +718,7 @@ int main( int argc, char *argv [] ){
     argpush( vstr( argv [ i ] ) , &args );
   } p("args:"); dmp( args ); p("\n");
 
-  struct tval *body = fnparse( buf );
+  struct tval *body = semiparse( buf );
   p("body:"); dmp( body ); p("\n");
 
   struct tval *rt = 0, *last_rt = 0, *cxs = 0;
