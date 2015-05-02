@@ -116,7 +116,7 @@ struct tval {
     struct tval *lnk; // LNK
     struct tkeyval { char *key; struct tval *val;} k; // KEYVAL
     struct tvs { int top; size_t sz; struct tval **buf;} v; // ARR/DOT/ARG/SEMI/OBJ
-  } u ; // todo: bnd value
+  } u ;
 }; // tval
 struct tval *evl( const struct tval *, const struct tval *, struct tval * );
 struct tval *semiparse( char * );
@@ -427,19 +427,20 @@ struct tval *builtin_incr( const struct tval *pargs , struct tval *cxs ){
 struct tval *builtin_test( const struct tval *pargs , struct tval *cxs ){
   if( pargs->u.v.top < 0 )
     xerr("builtin_test: no options");
-  struct tval *options = pargs->u.v.buf[ 0 ];
+  const struct tval *options = pargs->t == ARG ? pargs->u.v.buf[ 0 ] : pargs;
   struct tval *xcmp = oblookup( "cmp" , options ); if( xcmp ){
     struct tval *vcmp = evl( xcmp , pargs , cxs );
-    struct tval *xeq = oblookup( "eq" , options ); if( xeq ){
-      
-/*       if( xeq && vtop( vtop( *prvres ) )->u.num == vtop( vcmp )->u.num ){ */
-/* 	evl( xeq , cxs , pargs , nxtres ); */
-/*       } // if == */
+    struct tval *xeq = oblookup( "eq" , options );
+    if( xeq && ( vcmp->u.num == getlnktarg( cxs->u.v.buf[ 0 ] )->u.num )){
+      evl( xeq , pargs , cxs );
     } // if xeq
-  } else xerr("builtin_test: no xcmp");
-  return 0;
+  } else
+    xerr("builtin_test: no xcmp");
+  return 0; // no malloc
 } // builtin_test
 struct tval *builtin_brk( const struct tval *pargs , struct tval *cxs ){
+  // set flag in current context now
+  cxs->u.v.buf[ 0 ]->flg |= FBRK;
   return 0;
 } // builtin_brk
 
@@ -481,6 +482,9 @@ void dmp( struct tval *v ){
     case STR:
       p("%s", v->u.str);
       break;
+    case LNK:
+      p("(lnk)");
+      break;
     case ARR:
     case DOT:
     case ARG:
@@ -515,7 +519,7 @@ struct tval *evl
   struct tval *cxs
   ){
   if( tok == 0 ) return 0;
-  struct tval *rt = 0 , *last_rt = 0;
+  struct tval *rt = 0;
   switch( tok->t ){
   case NUM: // 123
   case OBJ: // { obj }
@@ -530,16 +534,19 @@ struct tval *evl
     } break;
 
   case DOT: // arg1 . arg2 . ...
-    // reduce to last result, chain context
-    for( int i = 0; i <= tok->u.v.top; i ++ ){
-      if(( rt = evl( tok->u.v.buf[ i ] , pargs , cxs ) )){ // result ?
-	if( last_rt ){
-	  vfree( shift( cxs ) ); last_rt = 0;
-	} unshift( last_rt = rt , &cxs ); rt = 0;
-      } // if rt
-    } // for
-    if( last_rt ){
-      shift( cxs ); rt = last_rt;
+    {
+      // reduce to last result, chain context
+      struct tval *last_rt = 0;
+      for( int i = 0; i <= tok->u.v.top; i ++ ){
+	if(( rt = evl( tok->u.v.buf[ i ] , pargs , cxs ) )){ // result ?
+	  if( last_rt ){ // dropn previous
+	    vfree( shift( cxs ) ); last_rt = 0;
+	  } unshift( last_rt = rt , &cxs ); rt = 0;
+	} // if rt
+      } // for
+      if( last_rt ){
+	rt = shift( cxs );
+      }
     } break;
 
   case SEMI: // stmt1 ; stmt2 ; ...
@@ -549,7 +556,8 @@ struct tval *evl
 	vfree( rt ); rt = 0; // dropn previous
       } // if rt
       rt = evl( tok->u.v.buf[ i ] , pargs , cxs );
-    } break;
+    }
+    break;
 
   case ARR : // [ array ]
     // map input array to output array
@@ -586,25 +594,26 @@ struct tval *evl
 	  xerr("evl: loop: no sig ");
       } // if loop
       struct tval *evob = symlookup( loopsig ? loopsig : tok , pargs , cxs );
-      while( 1 ){
-	rt = evl( evob , rtargs , cxs );
+      int incxstop = cxs->u.v.top;
+      for( int i = 0; 1; i ++ ){ // command loop
+	rt = evob->t == FN ?
+	  evob->u.fn( rtargs , cxs ) :
+	  evl( evob , rtargs , cxs );
 	if( !loopsig ){
-	  break;
+	  break; // not loop ?
 	} else {
-	  if( rt && ( rt->flg & FBRK ) ){
+	  if( rt->flg & FBRK ){ // or break ?
 	    rt->flg &= ~FBRK;
 	    break;
 	  } // if FBRK
 	} // if loopsig
-	if( rt ){ // drop last ?
-	  if( last_rt ){
-	    vfree( shift( cxs ) ); last_rt = 0;
-	  } unshift( last_rt = rt , &cxs ); rt = 0;
-	} // if rt
-      }
-      if( last_rt ){
-	shift( cxs ); rt = last_rt;
-      }
+	// hypo: SEMI execution ? leaves last cx
+	// we fail on subsequent iter because cx lnk leftover from initial iter
+	// need to make sure cxs is restored
+	if( cxs->u.v.top != incxstop ){
+	  xerr("evl: cxs not restored after loop iter");
+	} // if
+      } // for
       vfree( loopsig );
     } // if fn definition
     break;
