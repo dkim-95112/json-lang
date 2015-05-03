@@ -91,7 +91,7 @@ int push( char *val , struct stac **cx ){
   return (*cx)->top; 
 } // push
 
-typedef struct tval *tfn( const struct tval * , struct tval *);
+typedef struct tval *tfn( struct tval * , struct tval *);
 
 struct tval {
   unsigned long flg;
@@ -325,11 +325,12 @@ struct tval *arlookup( int index , const struct tval *ob ){
   if( index > ob->u.v.top ) xerr("arlookup: index too big");
   return ob->u.v.buf[ index ];
 } // arlookup
-struct tval *oblookup( const char *key , const struct tval *ob ){
-  if( ob->t != OBJ ) // ?
+struct tval *oblookup( const char *key , struct tval *ob ){
+  struct tval *o = getlnktarg( ob );
+  if( o->t != OBJ ) // ?
     xerr("oblookup: unexp ob typ");
-  for( int i = 0 ; i <= ob->u.v.top ; i ++ ){ // bottom to top ?
-    struct tval *v; if(( v = ob->u.v.buf[ i ] )){
+  for( int i = 0 ; i <= o->u.v.top ; i ++ ){ // bottom to top ?
+    struct tval *v; if(( v = o->u.v.buf[ i ] )){
       if( v->t == KEYVAL  && strcmp( v->u.k.key , key ) == 0 ){
 	return v->u.k.val ;
       } // if key
@@ -348,24 +349,29 @@ struct tval *symlookup
   if( strcmp( sym , "_arg" ) == 0 ){ // reservd
     rt = vdup( pargs );
   } else {
-    unshift( &gbuiltins, &cxs );
+    unshift( &gbuiltins, &cxs ); // shiftn builtins now
     for( int i = 0 ; i <= cxs->u.v.top ; i ++ ){ // left to right ?
       struct tval *cx; if(( cx = cxs->u.v.buf[ i ] )){
 	if(( rt = oblookup( sym , cx ) ))
 	  break;
       } // if cx
     } // for cxs
-    shift( cxs );
+    shift( cxs ); // shift out builtins
   }
   if( !rt )
     xerr("symlookup: not found");
   return rt;
 } // symlookup
-
-struct tval *builtin_p( const struct tval *pargs , struct tval *cxs ){
-  if( pargs->u.v.top < 0 )
-    xerr("builtin_p: no options");
-  const struct tval *options = pargs;
+struct tval *getopt( struct tval *pargs ){
+  if( pargs->t == ARG ){
+    if( pargs->u.v.top < 0 )
+      xerr("getopt: no options");
+    else
+      return pargs->u.v.buf[ 0 ];
+  } return pargs;
+} // getopt
+struct tval *builtin_p( struct tval *pargs , struct tval *cxs ){
+  struct tval *options = getopt( pargs);
   struct tval *xfmt = oblookup( "fmt" , options ); if( xfmt ){
     struct tval *vfmt = evl( xfmt , pargs , cxs );
     struct tval *xarg1 = oblookup( "arg1" , options ); if( xarg1 ){
@@ -387,17 +393,15 @@ struct tval *builtin_p( const struct tval *pargs , struct tval *cxs ){
   } // if xfmt
   return 0;
 } // builtin_p
-struct tval *builtin_incr( const struct tval *pargs , struct tval *cxs ){
+struct tval *builtin_incr( struct tval *pargs , struct tval *cxs ){
   struct tval *cx; if(( cx = getlnktarg( cxs->u.v.buf[0] ) )->t == NUM ){
     cx->u.num ++ ;
   } else {
     xerr("builtin_incr: unexp typ");
   } return 0; // no malloc ?
 } // builtin_incr
-struct tval *builtin_test( const struct tval *pargs , struct tval *cxs ){
-  if( pargs->u.v.top < 0 )
-    xerr("builtin_test: no options");
-  const struct tval *options = pargs->t == ARG ? pargs->u.v.buf[ 0 ] : pargs;
+struct tval *builtin_test( struct tval *pargs , struct tval *cxs ){
+  struct tval *options = getopt( pargs );
   struct tval *xcmp = oblookup( "cmp" , options ); if( xcmp ){
     struct tval *vcmp = evl( xcmp , pargs , cxs );
     struct tval *xeq = oblookup( "eq" , options );
@@ -408,28 +412,43 @@ struct tval *builtin_test( const struct tval *pargs , struct tval *cxs ){
     xerr("builtin_test: no xcmp");
   return 0; // no malloc
 } // builtin_test
-struct tval *builtin_brk( const struct tval *pargs , struct tval *cxs ){
-  // set flag in current context now
-  cxs->u.v.buf[ 0 ]->flg |= FBRK;
+struct tval *builtin_brk( struct tval *pargs , struct tval *cxs ){
+  cxs->u.v.buf[ 0 ]->flg |= FBRK; // set flag in current context now
   return 0;
 } // builtin_brk
 
-/*   } else if( strcmp( sigkey , "open" ) == 0 ){ */
-/*     struct tval *options = shift( pargs ); */
-/*     struct tval *xpath; if(( xpath = oblookup( "path" , options ) )){ */
-/*       struct tval *vpath = 0 ; evl( xpath , cxs , pargs , &vpath ); */
-/*       struct tval *xoflag; if(( xoflag = oblookup( "oflag" , options ) )){ */
-/* 	struct tval *voflag = 0 ; evl( xoflag , cxs , pargs , &voflag ); */
-/* 	char *path = vtop( vpath )->u.str ; */
-/* 	unsigned long oflag = vtop( voflag )->u.num; */
-/* 	vpush( vnum( open( path , oflag ) ) , nxtres ); // result */
-/* 	vfree( voflag ); */
-/*       } // if oflag */
-/*       vfree( vpath ); */
-/*     } // if xpath */
-//  }
+struct tval *sys_open( struct tval *pargs , struct tval *cxs ){
+  struct tval *options = getopt( pargs );
+  struct tval *rt = 0;
+  struct tval *xpath = oblookup( "path" , options ); if( xpath ){
+    struct tval *vpath = evl( xpath , pargs , cxs );
+    struct tval *xoflag = oblookup( "oflag" , options ); if( xoflag ){
+      struct tval *voflag = evl( xoflag , pargs , cxs );
+      rt = vnum( open( vpath->u.str , voflag->u.num ) );
+      vfree( voflag );
+    } // if oflag
+    vfree( vpath );
+  } // if path
+  return rt;
+} // sys_open
+struct tval *sys_ioctl( struct tval *pargs , struct tval *cxs ){
+  return 0;
+}
+
+struct tval *gsysbuf[] = {
+  &(struct tval){ 0, KEYVAL, .u.k = { "open", &(struct tval ){ 0, FN, .u.fn = sys_open } } },
+  &(struct tval){ 0, KEYVAL, .u.k = { "ioctl", &(struct tval ){ 0, FN, .u.fn = sys_ioctl } } }
+}; // gsysbuf
+struct tval gsys = {
+  0, OBJ , .u.v = {
+    .top = sizeof( gsysbuf ) / sizeof( *gsysbuf ) - 1,
+    .sz = sizeof( gsysbuf ),
+    .buf = gsysbuf
+  }
+}; // gsys
 
 struct tval *gbuiltinbuf[] = {
+  &(struct tval){ 0, KEYVAL, .u.k = { "sys", &gsys } },
   &(struct tval){ 0, KEYVAL, .u.k = { "p", &(struct tval ){ 0, FN, .u.fn = builtin_p } } },
   &(struct tval){ 0, KEYVAL, .u.k = { "incr", &(struct tval ){ 0, FN, .u.fn = builtin_incr } } },
   &(struct tval){ 0, KEYVAL, .u.k = { "test", &(struct tval ){ 0, FN, .u.fn = builtin_test } } },
@@ -441,7 +460,7 @@ struct tval gbuiltins = {
     .sz = sizeof( gbuiltinbuf ),
     .buf = gbuiltinbuf
   }
-};
+}; // gbuiltins
 
 void dmp( struct tval *v ){
   if( v ){
@@ -564,6 +583,9 @@ struct tval *evl
       struct tval *evob = symlookup( loopsig ? loopsig->u.str : tok->u.k.key , pargs , cxs );
       int incxstop = cxs->u.v.top;
       for( int i = 0; 1; i ++ ){ // command loop
+
+	// todo: if rtargs is array, do array lookup
+
 	rt = evob->t == FN ?
 	  evob->u.fn( rtargs , cxs ) :
 	  evl( evob , rtargs , cxs );
