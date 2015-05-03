@@ -5,22 +5,19 @@
       oflag: 2
     }).test({
       cmp: 0,
-      lt: fn{
+      lt:
         perror({
           s: "open faild"
         }).exit({
           status: sys.errno
-        })
-      },
-      else: fn{
+        }),
+      else:
         sys.ioctl({
           fd: this,
           req: 0x40487413
         })
-      }
     })
   },
-
   t: 0,
   myloop: fn{
     p({
