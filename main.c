@@ -4,6 +4,8 @@
 #include <stdlib.h> // exit, malloc, free, realloc
 #include <sys/errno.h>
 #include <fcntl.h> // open
+#include <sys/ioctl.h>
+
 int ( *p )( const char *, ... ) = printf; // alias
 int xerr( const char *s ){ fflush(NULL); perror(s); exit(errno); }
 void *xmalloc( size_t size ){
@@ -96,10 +98,12 @@ typedef struct tval *tfn( struct tval * , struct tval *);
 struct tval {
   unsigned long flg;
 #define FBRK 1
+#define MAP 2 // map stac to array
+#define CHAIN 4 // chain eval context
   enum val_t {
     NUL = 0,
     NUM, // long
-    STR, // quotd "string" literal, plain sym, ??? - freed
+    STR, // quotd "string" literal, plain key, ??? - freed
     FN, // compiled-in function
     LNK, // link to another tval
     KEYVAL, // { key : val } both key & val freed ?
@@ -340,28 +344,28 @@ struct tval *oblookup( const char *key , struct tval *ob ){
 
 struct tval gbuiltins;
 
-struct tval *symlookup
-( char *sym ,
+struct tval *cxslookup
+( char *key ,
   const struct tval *pargs ,
   struct tval *cxs
   ){
   struct tval *rt = 0;
-  if( strcmp( sym , "_arg" ) == 0 ){ // reservd
+  if( strcmp( key , "_arg" ) == 0 ){ // reservd
     rt = vdup( pargs );
   } else {
     unshift( &gbuiltins, &cxs ); // shiftn builtins now
     for( int i = 0 ; i <= cxs->u.v.top ; i ++ ){ // left to right ?
       struct tval *cx; if(( cx = cxs->u.v.buf[ i ] )){
-	if(( rt = oblookup( sym , cx ) ))
+	if(( rt = oblookup( key , cx ) ))
 	  break;
       } // if cx
     } // for cxs
     shift( cxs ); // shift out builtins
   }
   if( !rt )
-    xerr("symlookup: not found");
+    xerr("cxslookup: not found");
   return rt;
-} // symlookup
+} // cxslookup
 struct tval *getopt( struct tval *pargs ){
   if( pargs->t == ARG ){
     if( pargs->u.v.top < 0 )
@@ -405,16 +409,18 @@ struct tval *builtin_test( struct tval *pargs , struct tval *cxs ){
   struct tval *xcmp = oblookup( "cmp" , options ); if( xcmp ){
     struct tval *vcmp = evl( xcmp , pargs , cxs );
     struct tval *xeq = oblookup( "eq" , options );
+    struct tval *xlt = oblookup( "lt" , options );
     if( xeq && ( vcmp->u.num == getlnktarg( cxs->u.v.buf[ 0 ] )->u.num )){
       evl( xeq , pargs , cxs );
     } // if xeq
-  } else
+  } else {
     xerr("builtin_test: no xcmp");
+  }
   return 0; // no malloc
 } // builtin_test
 struct tval *builtin_brk( struct tval *pargs , struct tval *cxs ){
   cxs->u.v.buf[ 0 ]->flg |= FBRK; // set flag in current context now
-  return 0;
+  return 0; // no malloc
 } // builtin_brk
 
 struct tval *sys_open( struct tval *pargs , struct tval *cxs ){
@@ -432,8 +438,26 @@ struct tval *sys_open( struct tval *pargs , struct tval *cxs ){
   return rt;
 } // sys_open
 struct tval *sys_ioctl( struct tval *pargs , struct tval *cxs ){
-  return 0;
-}
+  struct tval *options = getopt( pargs );
+  struct tval *rt = 0;
+  struct tval *xfd = oblookup( "fd" , options ); if( xfd ){
+    struct tval *fd = evl( xfd , pargs , cxs );
+    struct tval *xreq = oblookup( "req" , options ); if( xreq ){
+      struct tval *req = evl( xreq , pargs , cxs );
+      struct tval *buf = xmalloc( 0x48 );
+      rt = vnum( ioctl( fd->u.num , req->u.num , buf ) );
+	
+	//todo: pass buf up to parent here ?
+	//vfree( buf );
+      vfree( req );
+    } else {
+      xerr("sys_ioctl: no req");
+    } vfree( fd );
+  } else {
+    xerr("sys_ioctl: no fd");
+  }
+  return rt;
+} // sys_ioctl
 
 struct tval *gsysbuf[] = {
   &(struct tval){ 0, KEYVAL, .u.k = { "open", &(struct tval ){ 0, FN, .u.fn = sys_open } } },
@@ -501,7 +525,10 @@ void dmp( struct tval *v ){
     } // switch v->t
   } else p("(nul)");
 } // dmp
-
+struct tval *bind( struct tval *v ){
+  xerr("bind:?");
+  return 0;
+} // bind
 struct tval *evl
 ( const struct tval *tok ,
   const struct tval *pargs ,
@@ -518,8 +545,8 @@ struct tval *evl
   case STR:
     if( *tok->u.str == '"' ){ // quotd "string" literal ?
       rt = vstr( escap( tok->u.str ) );
-    } else { // plain unquotd symbol
-      rt = vlnk( symlookup( tok->u.str , pargs , cxs ) );
+    } else { // plain unquotd key
+      rt = vlnk( cxslookup( tok->u.str , pargs , cxs ) );
     } break;
 
   case DOT: // arg1 . arg2 . ...
@@ -580,30 +607,40 @@ struct tval *evl
 	} else
 	  xerr("evl: loop: no sig ");
       } // if loop
-      struct tval *evob = symlookup( loopsig ? loopsig->u.str : tok->u.k.key , pargs , cxs );
+      struct tval *evob = cxslookup( loopsig ? loopsig->u.str : tok->u.k.key , pargs , cxs );
+
       int incxstop = cxs->u.v.top;
-      for( int i = 0; 1; i ++ ){ // command loop
-
-	// todo: if rtargs is array, do array lookup
-
-	rt = evob->t == FN ?
-	  evob->u.fn( rtargs , cxs ) :
-	  evl( evob , rtargs , cxs );
-	if( !loopsig ){
-	  break; // not loop ?
+      if( rtargs && rtargs->t == ARR ){
+	if( loopsig )
+	  xerr("evl: array map cannot be looping sig");
+	if( rtargs->u.v.top > 0 ){
+	  for( int i = 0; i <= rtargs->u.v.top; i ++ ){
+	    //arpush( arlookup( rtargs->u.v.buf[ 0 ] , evob ) , &rt );
+	  } // for ARR map
 	} else {
-	  if( rt->flg & FBRK ){ // or break ?
-	    rt->flg &= ~FBRK;
-	    break;
-	  } // if FBRK
-	} // if loopsig
-	// hypo: SEMI execution ? leaves last cx
-	// we fail on subsequent iter because cx lnk leftover from initial iter
-	// need to make sure cxs is restored
-	if( cxs->u.v.top != incxstop ){
-	  xerr("evl: cxs not restored after loop iter");
-	} // if
-      } // for
+	  rt = arlookup( getlnktarg( rtargs->u.v.buf[ 0 ] )->u.num , evob );
+	}
+      } else {
+	for( int i = 0; 1; i ++ ){ // command loop
+	  rt = evob->t == FN ?
+	    evob->u.fn( rtargs , cxs ) : // compiled-in
+	    evl( evob , rtargs , cxs ); // capensi code
+	  if( !loopsig ){
+	    break; // not loop ?
+	  } else {
+	    if( rt->flg & FBRK ){ // or break ?
+	      rt->flg &= ~FBRK;
+	      break;
+	    } // if FBRK
+	  } // if loopsig
+	  if( cxs->u.v.top != incxstop ){
+	    xerr("evl: cxs not restored after loop iter");
+	  } // if
+	} // for
+      } // if ARR sig
+      // hypo: SEMI execution ? leaves last cx
+      // we fail on subsequent iter because cx lnk leftover from initial iter
+      // need to make sure cxs is restored
       vfree( loopsig );
     } // if fn definition
     break;
@@ -613,7 +650,7 @@ struct tval *evl
     break;
   } // switch tok->t
 
-/*       // calln func( v , ... ) or sym[ a-index ] */
+/*       // calln func( v , ... ) or key[ a-index ] */
 /*       int ( *mypush )( struct tval * , struct tval ** ) = 0; */
 /*       struct tval *parms_result = 0; */
 /*       struct tval *parms; if(( parms = tok->u.kval.val )){ */
@@ -622,8 +659,8 @@ struct tval *evl
 
 
 /*       } // if parms */
-/*       if( parms_result && parms_result->t == AS ){ // sym [ indexes ] - do lookups */
-/* 	const struct tval *myobj = symlookup( tok , pargs , cxs ); */
+/*       if( parms_result && parms_result->t == AS ){ // key [ indexes ] - do lookups */
+/* 	const struct tval *myobj = cxslookup( tok , pargs , cxs ); */
 /* 	for( int i = 0; i <= parms_result->u.v.top; i ++ ){ // do lookups */
 /* 	  mypush( vdup( arlookup( parms_result->u.v.buf[ i ] , myobj ) ) , &result ); */
 /* 	} // for */
@@ -698,7 +735,7 @@ struct tval *_parse( char *hed ){ // single element
     if( *end >= '!' && *end <= '~' ){
       if( *hed >= '0' && *hed <= '9' ){ // num
 	rt = vnum( strtol( hed , 0 , strncasecmp( hed , "0x" , 2 ) ? 10 : 16 ) );
-      } else { // plain sym
+      } else { // plain key
 	rt = vstr( hed );
       } // if num
     } else {
@@ -752,7 +789,7 @@ int main( int argc, char *argv [] ){
 /*     arpush( keyfn( kf.key , kf.fn ) , &gbuiltins ); */
 /*   } // for */
 
-  struct tval *rt = 0, *cxs = 0;
+  struct tval *rt = 0, *cxs = 0, *main = vnum( 0 );
   rt = evl( semi , args , cxs );
   p("rt:"); dmp( rt ); p("\n");
   p("cxs:"); dmp( cxs ); p("\n");
