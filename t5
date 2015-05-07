@@ -10,12 +10,10 @@
           s: "open faild"
         }).exit({
           status: sys.errno
-        }),
-      else:
-        sys.ioctl({
-          fd: this,
-          req: 0x40487413
         })
+    }).ioctl({
+      fd: _this,
+      req: 0x40487413
     })
   },
   t: 0,
@@ -30,5 +28,5 @@
       eq : brk()
     })
   }
-}.loop("myloop", { not:"used ?"})
+}.mytermios().loop("myloop", { not:"used ?"})
 

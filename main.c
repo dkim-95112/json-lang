@@ -247,6 +247,7 @@ void vfree( struct tval *v ){
   if( !v ) return;
   switch( v->t ){
   case NUM:
+    v->u.num = 0;
     break;
   case STR:
     free( v->u.str );
@@ -258,6 +259,8 @@ void vfree( struct tval *v ){
   case LNK:
     v->u.lnk = 0;
     break;
+  case ARVAL:
+  case FNVAL:
   case KEYVAL:
     free( v->u.k.key );
     v->u.k.key = 0;
@@ -346,7 +349,7 @@ struct tval *arlookup( int index , const struct tval *ob ){
   return ob->u.v.buf[ index ];
 } // arlookup
 struct tval *oblookup( const char *key , struct tval *ob ){
-  struct tval *o = getlnktarg( ob );
+  struct tval *o = getlnktarg( ob ); // todo: ?
   // now skipping over non-obj which may be inserted into execution chain
   if( o->t == OBJ ){
     for( int i = 0 ; i <= o->u.v.top ; i ++ ){ // bottom to top ?
@@ -428,10 +431,13 @@ struct tval *builtin_test( struct tval *pargs , struct tval *cxs , struct tval *
   return 0; // no malloc
 } // builtin_test
 struct tval *builtin_brk( struct tval *pargs , struct tval *cxs , struct tval *parents ){
-  // todo: go up parents and clear first FLOOP flag
-
-  //cxs->u.v.buf[ 0 ]->flg |= FBRK; // set flag in current context now
-  return 0; // no malloc
+  // now clearn first ancestor FLOOP flag
+  for( int i = 0; i <= parents->u.v.top; i ++ ){
+    if( parents->u.v.buf[ i ]->flg & FLOOP ){
+      parents->u.v.buf[ i ]->flg &= ~FLOOP;
+      break;
+    }
+  } return 0; // no malloc
 } // builtin_brk
 
 struct tval *sys_open( struct tval *pargs , struct tval *cxs , struct tval *parents ){
@@ -586,16 +592,16 @@ struct tval *evl
     } break;
 
   case DOT: // arg1 . arg2 . ...
-    { // chaining context
+    { // chainn context
       int cxstop = cxs ? cxs->u.v.top : -1;
       for( int i = 0; i <= tok->u.v.top; i ++ ){
 	if(( rt = evl( tok->u.v.buf[ i ] , pargs , cxs , parents ) )){
-	  unshift( rt , &cxs ); // last result becomes new context
+	  unshift( rt , &cxs ); // last result becomen new context
 	} // if rt
       } // for
-      if( cxs && cxs->u.v.top > cxstop ){ // unwind context
-	rt = shift( cxs ); // keep last	
-	while( cxs->u.v.top > cxstop ){ // forgetn previous
+      if( cxs && cxs->u.v.top > cxstop ){ // unwindn context
+	rt = shift( cxs ); // keepn last	
+	for( int i = 0; cxs->u.v.top > cxstop; i ++ ){ // forgetn previous
 	  vfree( shift( cxs ) );
 	} // while
       } // if
@@ -649,21 +655,19 @@ struct tval *evl
       struct tval *xob = cxslookup( loopsig ? loopsig->u.str : tok->u.k.key , cxs );
       if( loopsig )
 	xob->flg |= FLOOP;
-      unshift( xob , &parents ); // testing ...
+      unshift( xob , &parents ); // preserven
       int cxstop = cxs->u.v.top;
       for( int i = 0; 1 ; i ++ ){ // command loop
 	rt = xob->u.k.val->t == FN ?
 	  xob->u.k.val->u.fn( rtargs , cxs , parents ) : // compiled-in
 	  evl( xob->u.k.val , rtargs , cxs , parents ); // homo capensi code
-	if( xob->flg & FLOOP ){
-	} else {
-	  break; // not loop ?
-	} // if loopsig
 	if( cxs->u.v.top != cxstop ){
 	  xerr("evl: cxs not restored after each loop iter");
 	} // if
+	if(!( xob->flg & FLOOP ))
+	  break; // not loop ?
       } // for
-      shift( parents ); // testing...
+      shift( parents ); // forgetn
       vfree( loopsig );
     } break;
 
@@ -784,19 +788,13 @@ int main( int argc, char *argv [] ){
   struct tval *semi = semiparse( buf );
   p("semi:"); dmp( semi ); p("\n");
 
-  // build builtin table
-/*   for( int i = 0; i < n_builtindefs; i ++ ){  */
-/*     struct tkeyfn kf = g_builtindefs[ i ]; */
-/*     arpush( keyfn( kf.key , kf.fn ) , &gbuiltins ); */
-/*   } // for */
-
   struct tval *rt = 0, *cxs = 0, *parents = 0;
   rt = evl( semi , args , cxs , parents );
   p("rt:"); dmp( rt ); p("\n");
   p("cxs:"); dmp( cxs ); p("\n");
 
   vfree( rt );
-  vfree( cxs );
+  //  vfree( cxs );
   vfree( semi );
   vfree( args );
   free( buf );
