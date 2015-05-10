@@ -351,7 +351,7 @@ struct tval *oblookup( const char *key , struct tval *ob ){
     for( int i = 0 ; i <= o->u.v.top ; i ++ ){ // bottom to top ?
       struct tval *v; if(( v = o->u.v.buf[ i ] )){
 	if( v->t == KEYVAL  && strcmp( v->u.k.key , key ) == 0 ){
-	  return v ;
+	  return v->u.k.val ;
 	} // if key
       } // if v
     } // for
@@ -360,16 +360,22 @@ struct tval *oblookup( const char *key , struct tval *ob ){
 
 struct tval gbuiltins;
 
-struct tval *cxslookup( char *key , struct tval *cxs ){
+struct tval *cxslookup( char *key , struct tval *pargs , struct tval *cxs ){
   struct tval *rt = 0;
-  unshift( &gbuiltins, &cxs ); // shiftn builtins first now
-  for( int i = 0 ; i <= cxs->u.v.top ; i ++ ){ // left to right ?
-    struct tval *cx; if(( cx = cxs->u.v.buf[ i ] )){
-      if(( rt = oblookup( key , cx ) ))
-	break;
-    } // if cx
-  } // for cxs
-  shift( cxs ); // shift out builtins
+  if( strcmp( key , "_this" ) == 0 ){
+    rt = cxs->u.v.buf[ 0 ];
+  } else if( strcmp( key , "_arg" ) == 0 ){
+    rt = pargs;
+  } else {
+    unshift( &gbuiltins, &cxs ); // shiftn builtins first now
+    for( int i = 0 ; i <= cxs->u.v.top ; i ++ ){ // left to right ?
+      struct tval *cx; if(( cx = cxs->u.v.buf[ i ] )){
+	if(( rt = oblookup( key , cx ) ))
+	  break;
+      } // if cx
+    } // for cxs
+    shift( cxs ); // shift out builtins
+  }
   if( !rt )
     xerr("cxslookup: not found");
   return rt;
@@ -385,11 +391,11 @@ struct tval *getopt( struct tval *pargs ){
 struct tval *builtin_p( struct tval *pargs , struct tval *cxs , struct tval *parents ){
   struct tval *options = getopt( pargs);
   struct tval *xfmt = oblookup( "fmt" , options ); if( xfmt ){
-    struct tval *vfmt = evl( xfmt->u.k.val , pargs , cxs , 0 );
+    struct tval *vfmt = evl( xfmt , pargs , cxs , 0 );
     struct tval *xarg1 = oblookup( "arg1" , options ); if( xarg1 ){
-      struct tval *varg1 = evl( xarg1->u.k.val , pargs , cxs , 0 );
+      struct tval *varg1 = evl( xarg1 , pargs , cxs , 0 );
       struct tval *xarg2 = oblookup( "arg2" , options ); if( xarg2 ){
-	struct tval *varg2 = evl( xarg2->u.k.val , pargs , cxs , 0);
+	struct tval *varg2 = evl( xarg2 , pargs , cxs , 0);
 	p( vfmt->u.str , getlnktgt( varg1 )->u.num , varg2->u.num );
 	vfree( varg2 );
       } else {
@@ -415,11 +421,11 @@ struct tval *builtin_incr( struct tval *pargs , struct tval *cxs , struct tval *
 struct tval *builtin_test( struct tval *pargs , struct tval *cxs , struct tval *parents ){
   struct tval *options = getopt( pargs );
   struct tval *xcmp = oblookup( "cmp" , options ); if( xcmp ){
-    struct tval *vcmp = evl( xcmp->u.k.val , pargs , cxs , 0 );
+    struct tval *vcmp = evl( xcmp , pargs , cxs , 0 );
     struct tval *xeq = oblookup( "eq" , options );
     struct tval *xlt = oblookup( "lt" , options );
     if( xeq && ( vcmp->u.num == getlnktgt( cxs->u.v.buf[ 0 ] )->u.num )){
-      evl( xeq->u.k.val , pargs , cxs , parents );
+      evl( xeq , pargs , cxs , parents );
     } // if xeq
   } else {
     xerr("builtin_test: no xcmp");
@@ -440,9 +446,9 @@ struct tval *sys_open( struct tval *pargs , struct tval *cxs , struct tval *pare
   struct tval *options = getopt( pargs ); // tbd: eval all options first ?
   struct tval *rt = 0;
   struct tval *xpath = oblookup( "path" , options ); if( xpath ){
-    struct tval *vpath = evl( xpath->u.k.val , pargs , cxs , 0 );
+    struct tval *vpath = evl( xpath , pargs , cxs , 0 );
     struct tval *xoflag = oblookup( "oflag" , options ); if( xoflag ){
-      struct tval *voflag = evl( xoflag->u.k.val , pargs , cxs , 0 );
+      struct tval *voflag = evl( xoflag , pargs , cxs , 0 );
       rt = vnum( open( vpath->u.str , voflag->u.num ) );
       vfree( voflag );
     } // if oflag
@@ -454,9 +460,9 @@ struct tval *sys_ioctl( struct tval *pargs , struct tval *cxs , struct tval *par
   struct tval *options = getopt( pargs );
   struct tval *rt = 0;
   struct tval *xfd = oblookup( "fd" , options ); if( xfd ){
-    struct tval *fd = evl( xfd->u.k.val , pargs , cxs , 0 );
+    struct tval *fd = evl( xfd , pargs , cxs , 0 );
     struct tval *xreq = oblookup( "req" , options ); if( xreq ){
-      struct tval *req = evl( xreq->u.k.val , pargs , cxs , 0 );
+      struct tval *req = evl( xreq , pargs , cxs , 0 );
       unsigned long *buf = xmalloc( 0x48 );
       rt = vnum( ioctl( getlnktgt( fd )->u.num , req->u.num , buf ) );
       if( rt->u.num < 0 ){
@@ -582,10 +588,12 @@ struct tval *evl
     if( *tok->u.str == '"' ){ // quotd "string" literal ?
       rt = vstr( escap( tok->u.str ) );
     } else { // plain unquotd key
-      rt = vlnk( strcmp( tok->u.str , "_this" ) == 0 ? cxs->u.v.buf[ 0 ] :
-		 strcmp( tok->u.str , "_arg" ) == 0 ? pargs :
-		 cxslookup( tok->u.str , cxs )->u.k.val );
+      rt = vlnk( cxslookup( tok->u.str , pargs , cxs ) );
     } break;
+
+  case FN:
+    rt = tok->u.fn( pargs , cxs , parents ); // pargs evaluated by now ?
+    break;
 
   case DOT: // arg1 . arg2 . ...
     { // chainn context
@@ -625,7 +633,7 @@ struct tval *evl
       if(( args = tok->u.k.val )){ // eval args ?
 	rtargs = evl( args , pargs , cxs , 0 );
       } // if
-      struct tval *xob = cxslookup( tok->u.k.key , cxs );
+      struct tval *xob = cxslookup( tok->u.k.key , pargs, cxs );
       if( rtargs->u.v.top > 0 ){ // multi vals ?
 	for( int i = 0; i <= rtargs->u.v.top; i ++ ){
 	  xerr("evl: ARR multi-args not yet");
@@ -633,14 +641,14 @@ struct tval *evl
 	} // for ARR map
       } else { // single val ?
 	rt = vdup( arlookup( getlnktgt( rtargs->u.v.buf[ 0 ] )->u.num ,
-			     xob->bnd ? xob->bnd : xob->u.k.val ) );
+			     xob->bnd ? xob->bnd : xob ) );
       }
     } break;
 
   case FNVAL:
     { struct tval *rtargs = 0 , *args;
       if(( args = tok->u.k.val )){ // eval args ?
-	rtargs = evl( args , pargs , cxs , 0 );
+	rtargs = evl( args , pargs , cxs , parents );
       } // if
       struct tval *loopsig = 0;
       if( strcmp( tok->u.k.key , "loop" ) == 0 ){ // reservd
@@ -648,15 +656,13 @@ struct tval *evl
 	} else
 	  xerr("evl: loop: no sig ");
       } // if loop
-      struct tval *xob = cxslookup( loopsig ? loopsig->u.str : tok->u.k.key , cxs );
+      struct tval *xob = cxslookup( loopsig ? loopsig->u.str : tok->u.k.key , pargs , cxs );
       if( loopsig )
 	xob->flg |= FLOOP;
       unshift( xob , &parents ); // preserven
       int cxstop = cxs->u.v.top;
       for( int i = 0; 1 ; i ++ ){ // command loop
-	rt = xob->u.k.val->t == FN ?
-	  xob->u.k.val->u.fn( rtargs , cxs , parents ) : // compiled-in
-	  evl( xob->u.k.val , rtargs , cxs , parents ); // homo capensi code
+	rt = evl( xob , rtargs , cxs , parents ); // homo capensi code
 	if( cxs->u.v.top != cxstop ){
 	  xerr("evl: cxs not restored after each loop iter");
 	} // if
