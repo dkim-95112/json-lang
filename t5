@@ -1,21 +1,5 @@
 {
-  mytermios: fn{
-    sys.open({
-      path: "/dev/fd/0",
-      oflag: 2
-    }).test({
-      cmp: 0,
-      lt:
-        perror({
-          s: "open faild"
-        }).exit({
-          status: sys.errno
-        })
-    }).ioctl({
-      fd: _this,
-      req: 0x40487413
-    })
-  },
+  mytermios: [ 8 , 3 , 11 ],
   t: 0,
   myloop: fn{
     p({
@@ -28,5 +12,5 @@
       eq : brk()
     })
   }
-}.mytermios().loop("myloop", { not:"used ?"})
+}.loop("myloop")
 

@@ -239,10 +239,10 @@ struct tval *vdup( const struct tval *v ){
   } // if v
   return rt;
 } // vdup
-struct tval *getlnktarg( struct tval *v ){
+struct tval *getlnktgt( struct tval *v ){
   while( v->t == LNK ) v = v->u.lnk;
   return v;
-}// getlnktarg
+}// getlnktgt
 void vfree( struct tval *v ){
   if( !v ) return;
   switch( v->t ){
@@ -318,28 +318,24 @@ int unshift( struct tval *val , struct tval **cx ){
 struct tval *shift( struct tval *cx ){
   if( !cx )
     xerr("shift: nul cx");
-  if( cx->t != ARR )
+  struct tval *rt = 0; switch( cx->t ){
+  case STR:
+    rt = vdup( cx ); // coverge types ??
+    break;
+  case ARR:
+    if( cx->u.v.top < 0 ){
+      p("shift: empty\n");
+    } else {
+      rt = cx->u.v.buf[ 0 ];
+      for( int i = 0 ; i < cx->u.v.top ; i ++ ){
+	cx->u.v.buf[ i ] = cx->u.v.buf[ i + 1 ];
+      } cx->u.v.top --;
+    } break;
+  default:
     xerr("shift: unexp typ");
-  if( cx->u.v.top < 0 ){
-    p("shift: empty\n");
-  } else {
-    struct tval *rt = cx->u.v.buf[ 0 ];
-    for( int i = 0 ; i < cx->u.v.top ; i ++ ){
-      cx->u.v.buf[ i ] = cx->u.v.buf[ i + 1 ];
-    } cx->u.v.top --;
-    return rt;
-  } return 0;
+  } // switch
+  return rt;
 } // shift
-/* struct tval *vtop( struct tval *v ){ */
-/*   switch( v->t ){ */
-/*   case VS : */
-/*     if( v->u.v.top < 0 ) xerr("vtop: empty stac"); */
-/*     return v->u.v.buf[ v->u.v.top ]; */
-/*   default: */
-/*     xerr("vtop: unexp vs typ"); */
-/*   } // switch */
-/*   return 0; */
-/* } //vtop */
 
 struct tval *arlookup( int index , const struct tval *ob ){
   if( ob->t != ARR)
@@ -349,7 +345,7 @@ struct tval *arlookup( int index , const struct tval *ob ){
   return ob->u.v.buf[ index ];
 } // arlookup
 struct tval *oblookup( const char *key , struct tval *ob ){
-  struct tval *o = getlnktarg( ob ); // todo: ?
+  struct tval *o = getlnktgt( ob ); // todo: ?
   // now skipping over non-obj which may be inserted into execution chain
   if( o->t == OBJ ){
     for( int i = 0 ; i <= o->u.v.top ; i ++ ){ // bottom to top ?
@@ -394,10 +390,10 @@ struct tval *builtin_p( struct tval *pargs , struct tval *cxs , struct tval *par
       struct tval *varg1 = evl( xarg1->u.k.val , pargs , cxs , 0 );
       struct tval *xarg2 = oblookup( "arg2" , options ); if( xarg2 ){
 	struct tval *varg2 = evl( xarg2->u.k.val , pargs , cxs , 0);
-	p( vfmt->u.str , getlnktarg( varg1 )->u.num , varg2->u.num );
+	p( vfmt->u.str , getlnktgt( varg1 )->u.num , varg2->u.num );
 	vfree( varg2 );
       } else {
-	p( getlnktarg( vfmt )->u.str, getlnktarg( varg1 )->u.num );
+	p( getlnktgt( vfmt )->u.str, getlnktgt( varg1 )->u.num );
       } // if arg2
       vfree( varg1 );
     } else {
@@ -410,7 +406,7 @@ struct tval *builtin_p( struct tval *pargs , struct tval *cxs , struct tval *par
   return 0;
 } // builtin_p
 struct tval *builtin_incr( struct tval *pargs , struct tval *cxs , struct tval *parents ){
-  struct tval *cx; if(( cx = getlnktarg( cxs->u.v.buf[0] ) )->t == NUM ){
+  struct tval *cx; if(( cx = getlnktgt( cxs->u.v.buf[0] ) )->t == NUM ){
     cx->u.num ++ ;
   } else {
     xerr("builtin_incr: unexp typ");
@@ -422,7 +418,7 @@ struct tval *builtin_test( struct tval *pargs , struct tval *cxs , struct tval *
     struct tval *vcmp = evl( xcmp->u.k.val , pargs , cxs , 0 );
     struct tval *xeq = oblookup( "eq" , options );
     struct tval *xlt = oblookup( "lt" , options );
-    if( xeq && ( vcmp->u.num == getlnktarg( cxs->u.v.buf[ 0 ] )->u.num )){
+    if( xeq && ( vcmp->u.num == getlnktgt( cxs->u.v.buf[ 0 ] )->u.num )){
       evl( xeq->u.k.val , pargs , cxs , parents );
     } // if xeq
   } else {
@@ -441,7 +437,7 @@ struct tval *builtin_brk( struct tval *pargs , struct tval *cxs , struct tval *p
 } // builtin_brk
 
 struct tval *sys_open( struct tval *pargs , struct tval *cxs , struct tval *parents ){
-  struct tval *options = getopt( pargs );
+  struct tval *options = getopt( pargs ); // tbd: eval all options first ?
   struct tval *rt = 0;
   struct tval *xpath = oblookup( "path" , options ); if( xpath ){
     struct tval *vpath = evl( xpath->u.k.val , pargs , cxs , 0 );
@@ -462,7 +458,7 @@ struct tval *sys_ioctl( struct tval *pargs , struct tval *cxs , struct tval *par
     struct tval *xreq = oblookup( "req" , options ); if( xreq ){
       struct tval *req = evl( xreq->u.k.val , pargs , cxs , 0 );
       unsigned long *buf = xmalloc( 0x48 );
-      rt = vnum( ioctl( getlnktarg( fd )->u.num , req->u.num , buf ) );
+      rt = vnum( ioctl( getlnktgt( fd )->u.num , req->u.num , buf ) );
       if( rt->u.num < 0 ){
 	// error
       } else {
@@ -487,11 +483,11 @@ struct tval *sys_ioctl( struct tval *pargs , struct tval *cxs , struct tval *par
 } // sys_ioctl
 
 struct tval *gsysbuf[] = {
-  &(struct tval){ 0, KEYVAL, .u.k = { "open", &(struct tval ){ 0, FN, .u.fn = sys_open } } },
-  &(struct tval){ 0, KEYVAL, .u.k = { "ioctl", &(struct tval ){ 0, FN, .u.fn = sys_ioctl } } }
+  &(struct tval){ .t = KEYVAL, .u.k = { "open", &(struct tval ){ .t = FN, .u.fn = sys_open } } },
+  &(struct tval){ .t = KEYVAL, .u.k = { "ioctl", &(struct tval ){ .t = FN, .u.fn = sys_ioctl } } }
 }; // gsysbuf
 struct tval gsys = {
-  0, OBJ , .u.v = {
+  .t = OBJ , .u.v = {
     .top = sizeof( gsysbuf ) / sizeof( *gsysbuf ) - 1,
     .sz = sizeof( gsysbuf ),
     .buf = gsysbuf
@@ -630,14 +626,14 @@ struct tval *evl
 	rtargs = evl( args , pargs , cxs , 0 );
       } // if
       struct tval *xob = cxslookup( tok->u.k.key , cxs );
-      if( rtargs->u.v.top > 0 ){
+      if( rtargs->u.v.top > 0 ){ // multi vals ?
 	for( int i = 0; i <= rtargs->u.v.top; i ++ ){
 	  xerr("evl: ARR multi-args not yet");
 	  //arpush( arlookup( rtargs->u.v.buf[ 0 ] , xob ) , &rt );
 	} // for ARR map
-      } else {
-	rt = arlookup( getlnktarg( rtargs->u.v.buf[ 0 ] )->u.num ,
-		       xob->bnd ? xob->bnd : xob->u.k.val );
+      } else { // single val ?
+	rt = vdup( arlookup( getlnktgt( rtargs->u.v.buf[ 0 ] )->u.num ,
+			     xob->bnd ? xob->bnd : xob->u.k.val ) );
       }
     } break;
 
@@ -669,6 +665,7 @@ struct tval *evl
       } // for
       shift( parents ); // forgetn
       vfree( loopsig );
+      vfree( rtargs );
     } break;
 
   case KEYVAL:
@@ -702,7 +699,7 @@ struct tval *_parse( char *hed ){ // single element
 	bod = trim( tal );
       } // while
       hed = trim( hed );
-      rt = arval( hed , elm );
+      rt = *hed ? arval( hed , elm ) : elm;
     } break;
   case ')' : //  function ( a1 , a2 , ... )
     { *end = 0 ;

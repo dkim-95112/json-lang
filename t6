@@ -1,0 +1,32 @@
+{
+  mytermios: fn{
+    sys.open({
+      path: "/dev/fd/0",
+      oflag: 2
+    }).test({
+      cmp: 0,
+      lt:
+        perror({
+          s: "open faild"
+        }).exit({
+          status: sys.errno
+        })
+    }).ioctl({
+      fd: _this,
+      req: 0x40487413
+    })
+  },
+  t: 0,
+  myloop: fn{
+    p({
+      fmt : "%i_0x%x\n",
+      arg1 : t,
+      arg2 : mytermios[ t ]
+    });
+    t.incr().test({
+      cmp : 3,
+      eq : brk()
+    })
+  }
+}.mytermios().loop("myloop", { not:"used ?"})
+
